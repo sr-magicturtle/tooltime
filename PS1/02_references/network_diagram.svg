@@ -1,0 +1,172 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1060 380" width="100%" height="100%" style="background-color: #0f172a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+  <defs>
+    <!-- Gradients & Markers -->
+    <linearGradient id="sharedGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.8"/>
+      <stop offset="50%" stop-color="#fbbf24" stop-opacity="1"/>
+      <stop offset="100%" stop-color="#f59e0b" stop-opacity="0.8"/>
+    </linearGradient>
+    
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+
+    <marker id="arrowRedEB" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 1 L 7 4 L 0 7 z" fill="#ef4444" />
+    </marker>
+    <marker id="arrowGreenEB" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 1 L 7 4 L 0 7 z" fill="#10b981" />
+    </marker>
+  </defs>
+
+  <!-- Title & Subtitle -->
+  <text x="40" y="42" fill="#f8fafc" font-size="20" font-weight="700" letter-spacing="0.5">Dual-Line Track Access Network Topology</text>
+  <text x="40" y="66" fill="#94a3b8" font-size="13">Two lines (Line Alpha &amp; Line Beta) with independent bounds (EB/WB), each keeping its own H01↔H02 tunnel sector at the interchange — no shared capacity pool</text>
+
+  <!-- Bounds Direction Legend -->
+  <g transform="translate(680, 28)">
+    <rect x="0" y="0" width="340" height="50" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+    <text x="16" y="22" fill="#cbd5e1" font-size="12" font-weight="600">Directional Bounds:</text>
+    <path d="M 140 18 L 220 18" stroke="#38bdf8" stroke-width="2.5" marker-end="url(#arrowRedEB)"/>
+    <text x="232" y="22" fill="#38bdf8" font-size="11" font-weight="600">EB (Eastbound)</text>
+    <path d="M 220 36 L 140 36" stroke="#38bdf8" stroke-width="2.5" marker-end="url(#arrowRedEB)"/>
+    <text x="232" y="40" fill="#38bdf8" font-size="11" font-weight="600">WB (Westbound)</text>
+  </g>
+
+  <!-- ==================== LINE ALPHA (Red Line) ==================== -->
+  <g transform="translate(0, 40)">
+    <!-- Line Header -->
+    <rect x="40" y="85" width="60" height="26" rx="4" fill="#ef4444" />
+    <text x="70" y="103" fill="#ffffff" font-size="13" font-weight="800" text-anchor="middle">ALP</text>
+    <text x="112" y="102" fill="#fca5a5" font-size="12" font-weight="600">Metro Line Alpha (Red Line)</text>
+
+    <!-- EB Track Line (continuous through H01<->H02 — ALP's own tunnel sector) -->
+    <path d="M 180 92 L 980 92" stroke="#ef4444" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowRedEB)"/>
+    <text x="995" y="96" fill="#ef4444" font-size="10" font-weight="700">EB</text>
+
+    <!-- WB Track Line (continuous through H01<->H02 — ALP's own tunnel sector) -->
+    <path d="M 180 116 L 980 116" stroke="#ef4444" stroke-width="4" stroke-dasharray="6,4" stroke-linecap="round"/>
+    <path d="M 180 116 L 170 116" stroke="#ef4444" stroke-width="4" marker-end="url(#arrowRedEB)"/>
+    <text x="150" y="120" fill="#ef4444" font-size="10" font-weight="700">WB</text>
+
+    <!-- ALP's own H01/H02 (interchange stations, but ALP's sector/platforms here are ALP's own — no shared pool) -->
+    <rect x="466" y="82" width="24" height="44" rx="5" fill="#f59e0b" stroke="#ef4444" stroke-width="2.5"/>
+    <text x="478" y="76" fill="#fbbf24" font-size="11" font-weight="800" text-anchor="middle">H01</text>
+    <rect x="566" y="82" width="24" height="44" rx="5" fill="#f59e0b" stroke="#ef4444" stroke-width="2.5"/>
+    <text x="578" y="76" fill="#fbbf24" font-size="11" font-weight="800" text-anchor="middle">H02</text>
+    <text x="530" y="138" fill="#fca5a5" font-size="9" text-anchor="middle">SEC:ALP:H01_H02 (own capacity)</text>
+
+    <!-- ALP Stations West: S01 to S04 -->
+    <!-- S01 -->
+    <circle cx="200" cy="104" r="8" fill="#1e293b" stroke="#ef4444" stroke-width="3"/>
+    <text x="200" y="76" fill="#f8fafc" font-size="12" font-weight="600" text-anchor="middle">S01</text>
+    <!-- S02 -->
+    <circle cx="270" cy="104" r="8" fill="#1e293b" stroke="#ef4444" stroke-width="3"/>
+    <text x="270" y="76" fill="#f8fafc" font-size="12" font-weight="600" text-anchor="middle">S02</text>
+    <text x="235" y="138" fill="#64748b" font-size="9" text-anchor="middle">S01_S02</text>
+    <!-- S03 -->
+    <circle cx="340" cy="104" r="8" fill="#1e293b" stroke="#ef4444" stroke-width="3"/>
+    <text x="340" y="76" fill="#f8fafc" font-size="12" font-weight="600" text-anchor="middle">S03</text>
+    <text x="305" y="138" fill="#64748b" font-size="9" text-anchor="middle">S02_S03</text>
+    <!-- S04 -->
+    <circle cx="410" cy="104" r="8" fill="#1e293b" stroke="#ef4444" stroke-width="3"/>
+    <text x="410" y="76" fill="#f8fafc" font-size="12" font-weight="600" text-anchor="middle">S04</text>
+    <text x="375" y="138" fill="#64748b" font-size="9" text-anchor="middle">S03_S04</text>
+    <text x="445" y="138" fill="#64748b" font-size="9" text-anchor="middle">S04_H01</text>
+
+    <!-- ALP Stations East: S05 to S08 -->
+    <!-- S05 -->
+    <circle cx="650" cy="104" r="8" fill="#1e293b" stroke="#ef4444" stroke-width="3"/>
+    <text x="650" y="76" fill="#f8fafc" font-size="12" font-weight="600" text-anchor="middle">S05</text>
+    <text x="615" y="138" fill="#64748b" font-size="9" text-anchor="middle">H02_S05</text>
+    <!-- S06 -->
+    <circle cx="720" cy="104" r="8" fill="#1e293b" stroke="#ef4444" stroke-width="3"/>
+    <text x="720" y="76" fill="#f8fafc" font-size="12" font-weight="600" text-anchor="middle">S06</text>
+    <text x="685" y="138" fill="#64748b" font-size="9" text-anchor="middle">S05_S06</text>
+    <!-- S07 -->
+    <circle cx="790" cy="104" r="8" fill="#1e293b" stroke="#ef4444" stroke-width="3"/>
+    <text x="790" y="76" fill="#f8fafc" font-size="12" font-weight="600" text-anchor="middle">S07</text>
+    <text x="755" y="138" fill="#64748b" font-size="9" text-anchor="middle">S06_S07</text>
+    <!-- S08 -->
+    <circle cx="860" cy="104" r="8" fill="#1e293b" stroke="#ef4444" stroke-width="3"/>
+    <text x="860" y="76" fill="#f8fafc" font-size="12" font-weight="600" text-anchor="middle">S08</text>
+    <text x="825" y="138" fill="#64748b" font-size="9" text-anchor="middle">S07_S08</text>
+  </g>
+
+  <!-- ==================== INTERCHANGE CROSSOVER NOTE ==================== -->
+  <!-- H01/H02 no longer merge into a shared pool — each line keeps its own
+       tunnel sector and platforms straight through. Only a Live activity's
+       closure crosses between the two (dashed link below). -->
+  <g transform="translate(0, 40)">
+    <rect x="450" y="70" width="160" height="240" rx="12" fill="#1e293b" fill-opacity="0.25" stroke="#475569" stroke-width="1.5" stroke-dasharray="4,4"/>
+    <path d="M 478 126 L 478 232" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrowGreenEB)"/>
+    <path d="M 578 126 L 578 232" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrowGreenEB)"/>
+    <g transform="translate(530, 180)">
+      <rect x="-78" y="-16" width="156" height="34" rx="6" fill="#1e1b4b" stroke="#94a3b8" stroke-width="1.5"/>
+      <text x="0" y="-3" fill="#e2e8f0" font-size="9.5" font-weight="700" text-anchor="middle">Live-only crossover</text>
+      <text x="0" y="10" fill="#94a3b8" font-size="8" text-anchor="middle">Non-Live: fully independent</text>
+    </g>
+  </g>
+
+  <!-- ==================== BET TRACK (Green Line) ==================== -->
+  <g transform="translate(0, 40)">
+    <!-- Line Header -->
+    <rect x="40" y="261" width="60" height="26" rx="4" fill="#10b981" />
+    <text x="70" y="279" fill="#ffffff" font-size="13" font-weight="800" text-anchor="middle">BET</text>
+    <text x="112" y="278" fill="#a7f3d0" font-size="12" font-weight="600">Metro Line Beta (Green Line)</text>
+
+    <!-- EB Track Line (continuous through H01<->H02 — BET's own tunnel sector) -->
+    <path d="M 180 268 L 980 268" stroke="#10b981" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowGreenEB)"/>
+    <text x="995" y="272" fill="#10b981" font-size="10" font-weight="700">EB</text>
+
+    <!-- WB Track Line (continuous through H01<->H02 — BET's own tunnel sector) -->
+    <path d="M 180 292 L 980 292" stroke="#10b981" stroke-width="4" stroke-dasharray="6,4" stroke-linecap="round"/>
+    <path d="M 180 292 L 170 292" stroke="#10b981" stroke-width="4" marker-end="url(#arrowGreenEB)"/>
+    <text x="150" y="296" fill="#10b981" font-size="10" font-weight="700">WB</text>
+
+    <!-- BET's own H01/H02 (interchange stations, but BET's sector/platforms here are BET's own — no shared pool) -->
+    <rect x="466" y="258" width="24" height="44" rx="5" fill="#f59e0b" stroke="#10b981" stroke-width="2.5"/>
+    <text x="478" y="322" fill="#fbbf24" font-size="11" font-weight="800" text-anchor="middle">H01</text>
+    <rect x="566" y="258" width="24" height="44" rx="5" fill="#f59e0b" stroke="#10b981" stroke-width="2.5"/>
+    <text x="578" y="322" fill="#fbbf24" font-size="11" font-weight="800" text-anchor="middle">H02</text>
+    <text x="530" y="254" fill="#a7f3d0" font-size="9" text-anchor="middle">SEC:BET:H01_H02 (own capacity)</text>
+
+    <!-- BET Stations West: S11 to S14 -->
+    <!-- S11 -->
+    <circle cx="200" cy="280" r="8" fill="#1e293b" stroke="#10b981" stroke-width="3"/>
+    <text x="200" y="315" fill="#f8fafc" font-size="12" font-weight="600" text-anchor="middle">S11</text>
+    <!-- S12 -->
+    <circle cx="270" cy="280" r="8" fill="#1e293b" stroke="#10b981" stroke-width="3"/>
+    <text x="270" y="315" fill="#f8fafc" font-size="12" font-weight="600" text-anchor="middle">S12</text>
+    <text x="235" y="254" fill="#64748b" font-size="9" text-anchor="middle">S11_S12</text>
+    <!-- S13 -->
+    <circle cx="340" cy="280" r="8" fill="#1e293b" stroke="#10b981" stroke-width="3"/>
+    <text x="340" y="315" fill="#f8fafc" font-size="12" font-weight="600" text-anchor="middle">S13</text>
+    <text x="305" y="254" fill="#64748b" font-size="9" text-anchor="middle">S12_S13</text>
+    <!-- S14 -->
+    <circle cx="410" cy="280" r="8" fill="#1e293b" stroke="#10b981" stroke-width="3"/>
+    <text x="410" y="315" fill="#f8fafc" font-size="12" font-weight="600" text-anchor="middle">S14</text>
+    <text x="375" y="254" fill="#64748b" font-size="9" text-anchor="middle">S13_S14</text>
+    <text x="445" y="254" fill="#64748b" font-size="9" text-anchor="middle">S14_H01</text>
+
+    <!-- BET Stations East: S15 to S18 -->
+    <!-- S15 -->
+    <circle cx="650" cy="280" r="8" fill="#1e293b" stroke="#10b981" stroke-width="3"/>
+    <text x="650" y="315" fill="#f8fafc" font-size="12" font-weight="600" text-anchor="middle">S15</text>
+    <text x="615" y="254" fill="#64748b" font-size="9" text-anchor="middle">H02_S15</text>
+    <!-- S16 -->
+    <circle cx="720" cy="280" r="8" fill="#1e293b" stroke="#10b981" stroke-width="3"/>
+    <text x="720" y="315" fill="#f8fafc" font-size="12" font-weight="600" text-anchor="middle">S16</text>
+    <text x="685" y="254" fill="#64748b" font-size="9" text-anchor="middle">S15_S16</text>
+    <!-- S17 -->
+    <circle cx="790" cy="280" r="8" fill="#1e293b" stroke="#10b981" stroke-width="3"/>
+    <text x="790" y="315" fill="#f8fafc" font-size="12" font-weight="600" text-anchor="middle">S17</text>
+    <text x="755" y="254" fill="#64748b" font-size="9" text-anchor="middle">S16_S17</text>
+    <!-- S18 -->
+    <circle cx="860" cy="280" r="8" fill="#1e293b" stroke="#10b981" stroke-width="3"/>
+    <text x="860" y="315" fill="#f8fafc" font-size="12" font-weight="600" text-anchor="middle">S18</text>
+    <text x="825" y="254" fill="#64748b" font-size="9" text-anchor="middle">S17_S18</text>
+  </g>
+
+</svg>

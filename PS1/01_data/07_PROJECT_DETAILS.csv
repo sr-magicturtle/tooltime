@@ -1,0 +1,15 @@
+contract_number,contract_description,contract_award_date,activity_type,nature_of_activity,contract_priority,contract_completion_date,planned_completion_date,number_of_workfronts,access_type,number_of_maximum_access_per_week
+C001,Renewal programme 1,2026-10-02,Renewal,Non-live (Consist),3,2027-08-01,2027-06-13,2,C,3
+C002,Renewal programme 2,2026-06-25,Renewal,Non-live (Consist),2,2027-08-08,2027-07-04,1,C,3
+C003,Construction programme 3,2026-02-01,Construction,Non-live (Others),1,2027-07-18,2027-07-04,1,C,3
+C004,Renewal programme 4,2026-01-16,Renewal,Non-live (Consist),1,2027-08-08,2027-07-25,1,PC,3
+C005,Renewal programme 5,2026-10-25,Renewal,Non-live (Consist),3,2027-08-22,2027-03-21,2,PC,3
+C006,Construction programme 6,2026-07-12,Construction,Non-live (Others),3,2027-08-15,2027-07-04,1,C,3
+C007,Renewal programme 7,2026-01-13,Renewal,Non-live (Consist),1,2027-07-25,2027-07-11,1,C,3
+C008,Renewal programme 8,2026-08-03,Renewal,Non-live (Consist),3,2027-08-22,2027-07-18,1,C,3
+C009,Construction programme 9,2026-02-09,Construction,Non-live (Others),3,2027-07-25,2027-06-27,1,PC,3
+C010,Construction programme 10,2026-05-18,Construction,Non-live (Others),3,2027-07-25,2027-05-16,2,C,3
+C011,Renewal programme 11,2026-04-20,Renewal,Non-live (Consist),2,2027-08-15,2027-07-11,1,C,3
+C012,Construction programme 12,2026-06-07,Construction,Non-live (Others),1,2027-07-25,2027-07-11,1,C,3
+C013,Live-rail renewal programme 13,2026-03-10,Renewal,Live,2,2027-08-01,2027-05-30,1,PC,2
+C014,Live-rail construction programme 14,2026-05-05,Construction,Live,3,2027-08-15,2027-07-18,1,PM,2

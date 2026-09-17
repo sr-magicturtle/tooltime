@@ -1,0 +1,6 @@
+.deps/
+.runtime/
+__pycache__/
+*.pyc
+node_modules/
+.env

@@ -1,0 +1,7 @@
+.deps
+.runtime
+.git
+**/__pycache__
+**/*.pyc
+node_modules
+outputs
