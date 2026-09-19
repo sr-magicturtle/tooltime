@@ -3,12 +3,15 @@
 The two claims worth defending: an agent cannot say anything illegal, and the
 negotiation can never return a worse plan than the baseline it started from.
 """
+import copy
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from . import engine, validator
 from .agents import MessageBus, negotiate
 from .agents import llm
+from .agents import planner as planner_module
 from .agents.planner import _verify
 
 DATA = Path(__file__).resolve().parents[1] / 'PS1' / '01_data'
@@ -156,6 +159,59 @@ class NegotiationTests(unittest.TestCase):
                 report = _verify(self.instance, solution, scenario)
                 self.assertEqual(solution['feasible'], report['feasible'])
                 self.assertEqual(report['hard_violations'], [])
+
+
+class NegotiationComplianceTests(unittest.TestCase):
+    """A fallback with a good CSV score must still honour the actual agreement."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.instance = engine.load_instance(DATA)
+        rows = engine._greedy(cls.instance, 'A', [], 40)
+        cls.better = engine._assemble(cls.instance, 'A', copy.deepcopy(rows), [])
+        cls.worse = engine._assemble(cls.instance, 'A',
+                                    [dict(row, week=row['week'] + 1) for row in rows], [])
+        cls.candidate_c = engine._assemble(cls.instance, 'C', copy.deepcopy(rows), [])
+
+    def test_a_nominally_feasible_fallback_cannot_ignore_an_active_lock(self):
+        row = self.better['access'][0]
+        lock = {'lever': 'forbid', 'activity': row['activity_id'], 'week': row['week']}
+        with patch.object(engine, 'solve', return_value=self.better):
+            outcome = negotiate(self.instance, 'A', rounds=0, locks=[lock])
+        self.assertFalse(outcome['report']['feasible'])
+        self.assertNotIn('objective_score', outcome['report']['soft_scores'])
+        self.assertIn('decision', {v['rule'] for v in outcome['report']['hard_violations']})
+
+    def test_current_reductions_are_checked_even_if_a_fallback_omits_them(self):
+        row = self.better['occupancy'][0]
+        change = {'location_id': row['location_id'], 'week': row['week'], 'capacity': 0}
+        with patch.object(engine, 'solve', return_value=self.better):
+            outcome = negotiate(self.instance, 'A', rounds=0, reductions=[change])
+        self.assertFalse(outcome['report']['feasible'])
+        self.assertIn('capacity', {v['rule'] for v in outcome['report']['hard_violations']})
+
+    def test_a_better_csv_score_cannot_accept_a_broken_deferred_start(self):
+        row = self.better['access'][0]
+        activity = next(a for a in self.instance['activities'] if a['activity_id'] == row['activity_id'])
+        offer = {'lever': 'defer_start', 'activity': row['activity_id'],
+                 'weeks': row['week'] - activity['start_week'] + 1, 'est_cost': 0}
+        pain = [{'contract': activity['contract_number'], 'overrun_days': 7,
+                 'binding': 'workload', 'bottlenecks': []}]
+        with patch.object(engine, 'solve', side_effect=[self.worse, self.better]), \
+                patch.object(planner_module, '_pain_points', return_value=pain), \
+                patch.object(planner_module.ContractAgent, 'respond', return_value=([offer], 'test', [])):
+            outcome = negotiate(self.instance, 'A', rounds=1)
+        self.assertFalse(outcome['ledger'][-1]['kept'])
+        self.assertFalse(outcome['ledger'][-1]['feasible'])
+        self.assertEqual(outcome['accepted_concessions'], [])
+        self.assertEqual(outcome['solution'], self.worse)
+
+    def test_promised_eclo_nights_are_checked_on_the_fallback_path(self):
+        offer = {'lever': 'eclo', 'activity': self.candidate_c['access'][0]['activity_id'], 'nights': 1}
+        with patch.object(engine, 'solve', return_value=self.candidate_c):
+            outcome = negotiate(self.instance, 'C', rounds=0, locks=[offer])
+        self.assertFalse(outcome['report']['feasible'])
+        self.assertIn('decision', {v['rule'] for v in outcome['report']['hard_violations']})
 
 
 class LiveClosureTests(unittest.TestCase):

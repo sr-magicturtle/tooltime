@@ -4,8 +4,10 @@ The guarantee worth defending here: whatever a judge uploads, the tool returns a
 or a clear reason, never a traceback — and a human override can never produce a plan
 that breaks a safety rule.
 """
+import copy
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from . import console as console_module, engine, harness, locks as locks_module
 from .agents import checker, intake
@@ -225,6 +227,175 @@ class ConsoleSessionTests(unittest.TestCase):
         result = self.session.add_lock('pin', 'A040', 1, 'rush it')
         self.assertFalse(result['accepted'])
         self.assertTrue(any(e['action'] == 'override_refused' for e in self.session.audit))
+
+
+class ConsoleIncumbentTests(unittest.TestCase):
+    """Repeated runs may improve a judged score, but may never lose a valid best."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.instance = engine.load_instance(DATA)
+        placements = engine._greedy(cls.instance, 'A', [], 40)
+        cls.better = engine._assemble(cls.instance, 'A', copy.deepcopy(placements), [])
+        shifted = [dict(row, week=row['week'] + 1) for row in placements]
+        cls.worse = engine._assemble(cls.instance, 'A', shifted, [])
+        cls.better_report = harness._report(cls.instance, cls.better, 'A')
+        cls.worse_report = harness._report(cls.instance, cls.worse, 'A')
+        assert cls.better_report['feasible'] and cls.worse_report['feasible']
+        assert cls.better_report['soft_scores']['objective_score'] < cls.worse_report['soft_scores']['objective_score']
+
+    def setUp(self):
+        self.session = console_module.Session(DATA)
+
+    def outcome(self, solution):
+        # A deliberately wrong cached score makes sure selection really rechecks CSVs.
+        return {'solution': copy.deepcopy(solution),
+                'report': {'feasible': True, 'soft_scores': {'objective_score': -100}},
+                'degraded': solution is None, 'error': None, 'refused': []}
+
+    def run_solution(self, solution):
+        with patch.object(locks_module, 'apply', return_value=self.outcome(solution)):
+            return self.session.solve('A', seconds=1)
+
+    def test_worse_rerun_keeps_the_independently_scored_best(self):
+        first = self.run_solution(self.better)
+        second = self.run_solution(self.worse)
+        self.assertEqual(first['score'], self.better_report['soft_scores']['objective_score'])
+        self.assertEqual(second['score'], first['score'])
+        self.assertTrue(second['retained_incumbent'])
+        self.assertEqual(second['churn']['moved'], 0)
+
+    def test_better_rerun_replaces_a_cached_report_with_a_forged_score(self):
+        self.run_solution(self.worse)
+        self.session.plans['A']['report']['soft_scores']['objective_score'] = -100
+        summary = self.run_solution(self.better)
+        self.assertEqual(summary['score'], self.better_report['soft_scores']['objective_score'])
+        self.assertFalse(summary['retained_incumbent'])
+
+    def test_failed_rerun_keeps_a_valid_schedule(self):
+        self.run_solution(self.better)
+        summary = self.run_solution(None)
+        self.assertTrue(summary['feasible'])
+        self.assertFalse(summary['degraded'])
+        self.assertTrue(summary['retained_incumbent'])
+
+    def test_an_incomplete_schedule_cannot_replace_the_best(self):
+        self.run_solution(self.better)
+        incomplete = copy.deepcopy(self.better)
+        incomplete['access'].pop()
+        summary = self.run_solution(incomplete)
+        self.assertTrue(summary['retained_incumbent'])
+        self.assertEqual(summary['score'], self.better_report['soft_scores']['objective_score'])
+
+    def test_a_corrupted_incumbent_is_not_reused_despite_its_cached_verdict(self):
+        self.run_solution(self.better)
+        self.session.plans['A']['solution']['access'].pop()
+        summary = self.run_solution(self.worse)
+        self.assertFalse(summary['retained_incumbent'])
+        self.assertEqual(summary['score'], self.worse_report['soft_scores']['objective_score'])
+
+    def test_new_locks_prevent_reuse_of_the_old_schedule(self):
+        self.run_solution(self.better)
+        row = self.better['access'][0]
+        self.session.add_lock('forbid', row['activity_id'], row['week'], 'Crew unavailable')
+        summary = self.run_solution(self.worse)
+        self.assertTrue(summary['feasible'])
+        self.assertFalse(summary['retained_incumbent'])
+        self.assertEqual(summary['score'], self.worse_report['soft_scores']['objective_score'])
+
+    def test_new_reductions_prevent_reuse_even_when_the_old_plan_would_fit(self):
+        self.run_solution(self.better)
+        self.session.reductions = [{'location_id': self.instance['supply'][0]['location_id'],
+                                    'week': 999, 'capacity': 0}]
+        summary = self.run_solution(self.worse)
+        self.assertFalse(summary['retained_incumbent'])
+        self.assertEqual(summary['score'], self.worse_report['soft_scores']['objective_score'])
+
+    def test_current_disruptions_are_checked_in_addition_to_submission_rules(self):
+        row = self.better['occupancy'][0]
+        reductions = [{'location_id': row['location_id'], 'week': row['week'], 'capacity': 0}]
+        report = console_module._checked_report(self.instance, self.better, 'A', reductions, [])
+        self.assertFalse(report['feasible'])
+        self.assertIn('capacity', {v['rule'] for v in report['hard_violations']})
+
+    def test_a_solver_report_cannot_hide_an_unsatisfied_override(self):
+        row = self.better['access'][0]
+        self.session.add_lock('forbid', row['activity_id'], row['week'], 'Crew unavailable')
+        summary = self.run_solution(self.better)
+        self.assertFalse(summary['feasible'])
+        self.assertIsNone(summary['score'])
+        self.assertIn('override', {v['rule'] for v in summary['hard_violations']})
+
+    def test_refused_locks_are_removed_after_a_valid_recovery(self):
+        row = self.better['access'][0]
+        pin = self.session.add_lock('pin', row['activity_id'], row['week'], 'Confirmed crew')['lock']
+        forbidden = self.session.add_lock('forbid', row['activity_id'], row['week'], 'Crew unavailable')['lock']
+        refusal = {'lock': forbidden, 'why': 'Conflicts with the confirmed pin', 'stage': 'solver'}
+        self.session.authorised['B'] = {'reason': 'old approval'}
+        self.session.transcripts['B'] = {'ledger': ['old negotiation']}
+        result = dict(self.outcome(self.better), applied=[pin], refused=[refusal])
+        with patch.object(locks_module, 'apply', return_value=result):
+            summary = self.session.solve('A', seconds=1)
+        self.assertTrue(summary['feasible'])
+        self.assertEqual(summary['refused'], [refusal])
+        self.assertEqual(self.session.locks, [pin])
+        self.assertEqual(self.session.authorised, {})
+        self.assertEqual(self.session.transcripts, {})
+        self.assertEqual(self.session.plans['A']['_context'], self.session._solve_context('A'))
+        self.assertTrue(self.session.authorise('A', 'Reviewed recovered plan')['ok'])
+        self.assertEqual(len(self.session.export('A')), 3)
+
+    def test_refusal_messages_survive_retaining_an_earlier_best_plan(self):
+        self.run_solution(self.better)
+        row = self.better['access'][0]
+        lock = self.session.add_lock('forbid', row['activity_id'], row['week'], 'Crew unavailable')['lock']
+        refusal = {'lock': lock, 'why': 'Override refused', 'stage': 'solver'}
+        result = dict(self.outcome(self.worse), applied=[], refused=[refusal])
+        with patch.object(locks_module, 'apply', return_value=result):
+            summary = self.session.solve('A', seconds=1)
+        self.assertTrue(summary['retained_incumbent'])
+        self.assertEqual(summary['refused'], [refusal])
+        self.assertEqual(self.session.locks, [])
+
+    def test_failed_recovery_does_not_remove_existing_constraints(self):
+        row = self.better['access'][0]
+        lock = self.session.add_lock('forbid', row['activity_id'], row['week'], 'Crew unavailable')['lock']
+        refusal = {'lock': lock, 'why': 'Override refused', 'stage': 'solver'}
+        result = dict(self.outcome(None), applied=[], refused=[refusal])
+        with patch.object(locks_module, 'apply', return_value=result):
+            summary = self.session.solve('A', seconds=1)
+        self.assertFalse(summary['feasible'])
+        self.assertEqual(self.session.locks, [lock])
+
+    def test_stale_recovery_does_not_remove_a_refused_constraint(self):
+        row = self.better['access'][0]
+        lock = self.session.add_lock('forbid', row['activity_id'], row['week'], 'Crew unavailable')['lock']
+        refusal = {'lock': lock, 'why': 'Override refused', 'stage': 'solver'}
+        def changed(*args, **kwargs):
+            self.session.reductions.append({'location_id': self.instance['supply'][0]['location_id'],
+                                            'week': 999, 'capacity': 0})
+            return dict(self.outcome(self.better), applied=[], refused=[refusal])
+        with patch.object(locks_module, 'apply', side_effect=changed):
+            with self.assertRaisesRegex(ValueError, 'inputs changed'):
+                self.session.solve('A', seconds=1)
+        self.assertEqual(self.session.locks, [lock])
+
+    def test_agent_rerun_also_preserves_the_better_schedule(self):
+        self.run_solution(self.better)
+        result = dict(self.outcome(self.worse), ledger=[], transcript=[], negotiator='test')
+        with patch.object(console_module, 'negotiate', return_value=result):
+            summary = self.session.solve('A', seconds=1, use_agents=True)
+        self.assertTrue(summary['retained_incumbent'])
+        self.assertFalse(self.session.negotiation('A')['ran'])
+
+    def test_a_result_for_an_instance_replaced_during_solving_is_discarded(self):
+        def reload(*args, **kwargs):
+            self.session.load_folder(DATA, 'new instance')
+            return self.outcome(self.better)
+        with patch.object(locks_module, 'apply', side_effect=reload):
+            with self.assertRaisesRegex(ValueError, 'inputs changed'):
+                self.session.solve('A', seconds=1)
+        self.assertEqual(self.session.plans, {})
 
 
 if __name__ == '__main__':
