@@ -1,2 +1,1 @@
 ortools==9.15.6755
-scikit-learn==1.9.1

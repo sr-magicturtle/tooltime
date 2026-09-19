@@ -192,7 +192,7 @@ class InputValidationTests(unittest.TestCase):
             with self.subTest(field=field):
                 files = copy.deepcopy(self.raw)
                 files[filename][0][field] = '2027-02-30'
-                with self.assertRaisesRegex(ValueError, f'{identifier}: {field}: expected a valid date'):
+                with self.assertRaisesRegex(ValueError, f'{identifier}: {field}: could not read'):
                     engine.load_instance(files)
 
     def test_unknown_contract_rejected(self):
@@ -253,3 +253,48 @@ class InputValidationTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DateFormatTests(unittest.TestCase):
+    """Instances in the wild mix date conventions, sometimes within one dataset.
+
+    The alternative test datasets write contract dates day-first (15-11-2026 or
+    15-11-26) while activity dates stay ISO. Rejecting those loses the whole run.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = Path(__file__).resolve().parents[1] / 'PS1' / '01_data'
+
+    def test_iso_dates_still_load(self):
+        instance = engine.load_instance(self.root)
+        self.assertEqual(instance['date_formats'], ['YYYY-MM-DD'])
+
+    def test_day_first_spellings_are_read(self):
+        from datetime import date
+        cases = {
+            '2027-05-24': date(2027, 5, 24),
+            '24-05-2027': date(2027, 5, 24),
+            '24-05-27': date(2027, 5, 24),
+            '24/05/2027': date(2027, 5, 24),
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(engine._date(text, 'test'), expected)
+
+    def test_an_unreadable_date_names_the_field(self):
+        with self.assertRaises(ValueError) as caught:
+            engine._date('not a date', 'C001: contract_award_date')
+        self.assertIn('C001: contract_award_date', str(caught.exception))
+
+    def test_dates_are_normalised_to_iso_after_loading(self):
+        """Downstream code and the validator both assume plain YYYY-MM-DD."""
+        from datetime import date
+        instance = engine.load_instance(self.root)
+        for project in instance['projects']:
+            for field in ('contract_award_date', 'contract_completion_date',
+                          'planned_completion_date'):
+                date.fromisoformat(project[field])          # raises if not ISO
+        for activity in instance['activities']:
+            date.fromisoformat(activity['planned_start_date'])
+        date.fromisoformat(instance['horizon_start'])

@@ -16,7 +16,7 @@ import math
 import sys
 import time
 from collections import Counter, defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -97,14 +97,37 @@ def _integer(row, field, context, minimum=0, allowed=None):
     return value
 
 
-def _date(value, context):
-    try:
-        parsed = date.fromisoformat(value)
-        if parsed.isoformat() != value:
-            raise ValueError('not YYYY-MM-DD')
+#: Accepted date spellings, tried in order. An instance may mix them: the alternative
+#: test datasets write contract dates day-first (15-11-2026) while activity dates stay
+#: ISO (2027-01-11). Anything not starting with a four-digit year is read day-first,
+#: which is the Singapore and UK convention; a US month-first file would be misread,
+#: so the format actually used is reported back on load.
+_DATE_FORMATS = (
+    ('%Y-%m-%d', 'YYYY-MM-DD'), ('%Y/%m/%d', 'YYYY/MM/DD'),
+    ('%d-%m-%Y', 'DD-MM-YYYY'), ('%d/%m/%Y', 'DD/MM/YYYY'),
+    ('%d-%m-%y', 'DD-MM-YY'),   ('%d/%m/%y', 'DD/MM/YY'),
+    ('%d %b %Y', 'DD Mon YYYY'), ('%d %B %Y', 'DD Month YYYY'),
+)
+
+
+def _date(value, context, seen=None):
+    """Parse a date written in any of the spellings instances use in practice.
+
+    `seen` optionally collects the format names encountered, so a caller can tell the
+    user which convention their file used rather than silently guessing.
+    """
+    text = str(value or '').strip()
+    for fmt, label in _DATE_FORMATS:
+        try:
+            parsed = datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+        if seen is not None:
+            seen.add(label)
         return parsed
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f'{context}: expected a valid date in YYYY-MM-DD format') from exc
+    raise ValueError(
+        f'{context}: could not read "{text}" as a date. '
+        f'Use YYYY-MM-DD, or DD-MM-YYYY.')
 
 
 def _unique(rows, fields, context):
@@ -142,7 +165,12 @@ def load_instance(path='PS1/01_data'):
             raise ValueError(f'{FILES["parameters"]}: missing parameter {key}')
     result['horizon_start'] = result['parameters']['horizon_start']
     result['horizon_weeks'] = _integer(result['parameters'], 'horizon_weeks', FILES['parameters'], 1)
-    origin = _date(result['horizon_start'], 'horizon_start')
+    formats = set()
+    origin = _date(result['horizon_start'], 'horizon_start', formats)
+    # Normalise to ISO immediately. Instances arrive with mixed conventions; every
+    # consumer downstream (including the validator) reads plain YYYY-MM-DD.
+    result['horizon_start'] = origin.isoformat()
+    result['parameters']['horizon_start'] = result['horizon_start']
     _unique(result['lines'], ['line_code'], FILES['lines'])
     _unique(result['stations'], ['line_code', 'station_id'], FILES['stations'])
     _unique(result['supply'], ['location_id'], FILES['supply'])
@@ -154,7 +182,8 @@ def load_instance(path='PS1/01_data'):
         for field in ('contract_priority', 'number_of_workfronts', 'number_of_maximum_access_per_week'):
             _integer(row, field, row['contract_number'], 1, {1, 2, 3} if field == 'contract_priority' else None)
         for field in ('contract_award_date', 'contract_completion_date', 'planned_completion_date'):
-            _date(row[field], f'{row["contract_number"]}: {field}')
+            row[field] = _date(row[field], f'{row["contract_number"]}: {field}',
+                               formats).isoformat()
         if row['access_type'] not in ('PC', 'PM', 'C'):
             raise ValueError(f'{row["contract_number"]}: access_type must be PC, PM or C')
         if row['contract_number'] in projects:
@@ -224,7 +253,10 @@ def load_instance(path='PS1/01_data'):
         if not math.isfinite(row['total_accesses']) or row['total_accesses'] <= 0:
             raise ValueError(f'{aid}: total_accesses must be a finite positive number')
         _integer(row, 'activity_priority', aid, allowed={1, 2, 3})
-        row['start_week'] = max(1, (_date(row['planned_start_date'], f'{aid}: planned_start_date') - origin).days // 7 + 1)
+        row['planned_start_date'] = _date(
+            row['planned_start_date'], f'{aid}: planned_start_date', formats).isoformat()
+        row['start_week'] = max(
+            1, (date.fromisoformat(row['planned_start_date']) - origin).days // 7 + 1)
         row['deadline_week'] = (date.fromisoformat(project['planned_completion_date']) - origin).days // 7 + 1
         row['nature'] = project['nature_of_activity']
         row['access_type'] = project['access_type']
@@ -251,6 +283,8 @@ def load_instance(path='PS1/01_data'):
         available.extend(successors[aid])
     if resolved != ids:
         raise ValueError('Cyclic predecessor chain: ' + ', '.join(sorted(ids - resolved)))
+    # Report how the dates were written, so a day-first file cannot be misread silently.
+    result['date_formats'] = sorted(formats)
     return result
 
 
@@ -296,11 +330,31 @@ def _footprint(instance, activity):
                 for other in instance['lines']:
                     if other['line_code'] != line:
                         closure.add(':'.join([parts[0], other['line_code'], parts[2], parts[3]]))
+    # A Live possession cuts traction power, so its closure reaches locations it does
+    # not itself occupy: the opposite bound, and — at the interchange — the other
+    # line's H01_H02 tunnel and H01/H02 platforms. The submission format carries only
+    # a week and a location-scoped co_share_group, so a reader cannot tell that two
+    # activities on different lines ran on different nights. Those locations are
+    # therefore exclusive for the whole week, matching 03_submission_sample. Its own
+    # locations are not: the sample co-shares A004 into A074's group at PLAT:ALP:H01:EB.
+    exclusive = set()
+    if live:
+        for loc in base:
+            parts = loc.split(':')
+            opposite = 'WB' if parts[3] == 'EB' else 'EB'
+            exclusive.add(':'.join(parts[:3] + [opposite]))
+            if (parts[0] == 'SEC' and parts[2] == 'H01_H02') or (parts[0] == 'PLAT' and parts[2] in ('H01', 'H02')):
+                for other in instance['lines']:
+                    if other['line_code'] != line:
+                        for side in ('EB', 'WB'):
+                            exclusive.add(':'.join([parts[0], other['line_code'], parts[2], side]))
+        exclusive -= base
     supply_ids = {r['location_id'] for r in instance['supply']}
     if not base <= supply_ids:
         raise ValueError('Supply missing for ' + ', '.join(sorted(base - supply_ids)))
     return {'line': line, 'bound': bound, 'locations': sorted(base),
             'closure_locations': sorted(closure), 'buffer_sectors': radius,
+            'live_exclusive_locations': sorted(exclusive),
             'affected_lines': sorted({loc.split(':')[1] for loc in closure})}
 
 
@@ -337,10 +391,31 @@ def _greedy(instance, scenario, reductions, horizon):
         locnights = defaultdict(set)
         cnights = defaultdict(set)
         crews = Counter()
+        placed = []
         candidates = [r for aid, r in acts.items() if remaining[aid] > 0 and r['start_week'] <= week and (not r.get('predecessor_activity_id') or completed.get(r['predecessor_activity_id'], horizon + 1) < week)]
-        candidates.sort(key=lambda r: (r['priority'], r['deadline_week'] - math.ceil(remaining[r['activity_id']] / 2), r['activity_priority'], r['activity_id']))
+        # A Live traction cut needs a week with nobody inside its reach, so it must
+        # claim one before the week fills up; scheduled last it starves and is dropped.
+        candidates.sort(key=lambda r: (0 if r['nature'].lower() == 'live' else 1,
+                                       r['priority'],
+                                       r['deadline_week'] - math.ceil(remaining[r['activity_id']] / 2),
+                                       r['activity_priority'], r['activity_id']))
         for a in candidates:
             aid = a['activity_id']
+            reach = set(a.get('live_exclusive_locations') or ())
+            # A Live cut sterilises the whole week inside its reach, so let it fall as
+            # late as its own deadline allows. Taken at the first opportunity it
+            # displaces work that has nowhere else to go.
+            if reach and week < a['deadline_week']:
+                needed = math.ceil(remaining[aid] / 2)
+                displaced = any(c['activity_id'] != aid and reach & set(c['locations'])
+                                for c in candidates)
+                if displaced and a['deadline_week'] - week >= needed:
+                    continue
+            # Live traction cuts take the whole week across every location they reach.
+            if any(reach & set(acts[b]['locations'])
+                   or set(acts[b].get('live_exclusive_locations') or ()) & set(a['locations'])
+                   for b in placed):
+                continue
             p = projects[a['contract_number']]
             key = (a['contract_number'], a['activity_type'])
             for night in sorted(range(1, slots + 1), key=lambda n: (-sum(bool(set(a['locations']) & set(acts[b]['locations'])) for b in bynight[n]), n)):
@@ -368,6 +443,7 @@ def _greedy(instance, scenario, reductions, horizon):
                 if remaining[aid] <= 0:
                     completed[aid] = week
                 bynight[night].append(aid)
+                placed.append(aid)
                 crews[(key, night)] += 1
                 cnights[key].add(night)
                 for loc in a['locations']:
@@ -378,7 +454,56 @@ def _greedy(instance, scenario, reductions, horizon):
     return allocations
 
 
-def _cp_solve(instance, scenario, reductions, horizon, seconds, seed=11):
+def _concession_index(concessions):
+    """Group a bundle by lever so the model can apply each in one pass.
+
+    A concession is a relaxation an agent offered and the planner accepted. Every
+    bundle is re-solved and re-validated, so an unhelpful one costs a time slice and
+    nothing else: the planner keeps a result only when it scores better.
+    """
+    index = {'defer_start': {}, 'eclo_force': {}, 'excess_permit': {},
+             'no_spend': set(), 'workfront_release': {}, 'co_share_hint': [],
+             'pin': set(), 'forbid': set(), 'no_eclo': set()}
+    for item in concessions or ():
+        lever = item.get('lever')
+        # Human locks. Unlike a concession these are hard: the solver must satisfy
+        # them or report the instance infeasible, so a reviewer's decision can never
+        # be quietly optimised away.
+        if lever == 'pin':
+            index['pin'].add((item['activity'], int(item['week'])))
+            continue
+        if lever == 'forbid':
+            index['forbid'].add((item['activity'], int(item['week'])))
+            continue
+        if lever == 'no_eclo':
+            index['no_eclo'].add(item['activity'])
+            continue
+        if lever == 'defer_start':
+            aid, weeks = item['activity'], int(item.get('weeks', 1))
+            index['defer_start'][aid] = max(index['defer_start'].get(aid, 0), weeks)
+        elif lever == 'eclo':
+            aid, nights = item['activity'], int(item.get('nights', 1))
+            index['eclo_force'][aid] = max(index['eclo_force'].get(aid, 0), nights)
+        elif lever == 'excess':
+            key = (item['location'], int(item['week']))
+            index['excess_permit'][key] = max(index['excess_permit'].get(key, 0), int(item.get('nights', 1)))
+        elif lever == 'slip':
+            index['no_spend'].add(item['contract'])
+        elif lever == 'workfront_release':
+            index['workfront_release'][item['contract']] = int(item['workfronts'])
+        elif lever == 'co_share':
+            index['co_share_hint'].append((item['activity'], item['with_activity']))
+    return index
+
+
+def _cp_solve(instance, scenario, reductions, horizon, seconds, seed=11, concessions=(),
+              relax_planned_dates=False):
+    offered = _concession_index(concessions)
+    # Scenario B forbids overrun outright. On an oversubscribed instance that makes B
+    # genuinely unsatisfiable, and forcing it anyway drops workload — a worse breach
+    # than the overrun it avoids. Relaxing lets the caller report "B is impossible
+    # here, and this is the least-overrun plan" instead of emitting a broken schedule.
+    strict_dates = scenario == 'B' and not relax_planned_dates
     acts = instance['activities']
     projects = {r['contract_number']: r for r in instance['projects']}
     byid = {a['activity_id']: a for a in acts}
@@ -392,8 +517,10 @@ def _cp_solve(instance, scenario, reductions, horizon, seconds, seed=11):
     ranges = {}
     for a in acts:
         aid = a['activity_id']
-        last = min(horizon, a['deadline_week']) if scenario == 'B' else horizon
-        ranges[aid] = range(a['start_week'], last + 1)
+        last = min(horizon, a['deadline_week']) if strict_dates else horizon
+        # A contract that agreed to stand down starts later than it asked to.
+        first = min(a['start_week'] + offered['defer_start'].get(aid, 0), last)
+        ranges[aid] = range(first, last + 1)
         for w in ranges[aid]:
             y = active[aid, w] = model.NewBoolVar(f'on_{aid}_{w}')
             for n in range(1, slots + 1):
@@ -401,9 +528,29 @@ def _cp_solve(instance, scenario, reductions, horizon, seconds, seed=11):
             model.Add(sum(x[aid, w, n] for n in range(1, slots + 1)) == y)
             e = eclo[aid, w] = model.NewBoolVar(f'ec_{aid}_{w}')
             model.Add(e <= y)
-            if scenario == 'A':
+            if scenario == 'A' or a['contract_number'] in offered['no_spend']:
+                # Scenario A forbids ECLO outright; a contract that accepted slip
+                # instead has said it would rather wait than curtail service.
                 model.Add(e == 0)
             objectives.append(50 * e)
+        if offered['eclo_force'].get(aid) and scenario != 'A':
+            # The contract offered ECLO nights; test whether spending them pays.
+            model.Add(sum(eclo[aid, w] for w in ranges[aid]) >= min(
+                offered['eclo_force'][aid], len(ranges[aid])))
+        if aid in offered['no_eclo']:
+            for w in ranges[aid]:
+                model.Add(eclo[aid, w] == 0)
+        # Human locks are hard. A pin outside the activity's range is unsatisfiable by
+        # construction, and the caller is told so rather than having it silently ignored.
+        for pinned_aid, week in offered['pin']:
+            if pinned_aid == aid:
+                if week in ranges[aid]:
+                    model.Add(active[aid, week] == 1)
+                else:
+                    model.AddBoolOr([])
+        for forbidden_aid, week in offered['forbid']:
+            if forbidden_aid == aid and week in ranges[aid]:
+                model.Add(active[aid, week] == 0)
         units = math.ceil(a['total_accesses'] * 2)
         achieved = sum(2 * active[aid, w] + eclo[aid, w] for w in ranges[aid])
         model.Add(achieved >= units)
@@ -416,11 +563,11 @@ def _cp_solve(instance, scenario, reductions, horizon, seconds, seed=11):
         planned = (date.fromisoformat(projects[a['contract_number']]['planned_completion_date']) - origin).days
         late = model.NewIntVar(0, horizon * 7, f'late_{aid}')
         model.Add(late >= end * 7 - 1 - planned)
-        if scenario == 'B':
+        if strict_dates:
             model.Add(late == 0)
         weight = {1: 100, 2: 10, 3: 1}[a['priority']]
         nudge = {1: 13, 2: 12, 3: 10}[a['activity_priority']]
-        if scenario != 'B':
+        if not strict_dates:
             objectives.append(weight * nudge * late)
     # Finish-to-start precedence at the week's granularity.
     for a in acts:
@@ -437,6 +584,17 @@ def _cp_solve(instance, scenario, reductions, horizon, seconds, seed=11):
             for w in set(ranges[a['activity_id']]) & set(ranges[b['activity_id']]):
                 for n in range(1, slots + 1):
                     model.Add(x[a['activity_id'], w, n] + x[b['activity_id'], w, n] <= 1)
+    # Live traction cuts are exclusive for the whole week, not merely the night: the
+    # submitted CSVs cannot express "different nights" across two locations.
+    for a in acts:
+        reach = set(a.get('live_exclusive_locations') or ())
+        if not reach:
+            continue
+        for b in acts:
+            if b['activity_id'] == a['activity_id'] or not (reach & set(b['locations'])):
+                continue
+            for w in set(ranges[a['activity_id']]) & set(ranges[b['activity_id']]):
+                model.Add(active[a['activity_id'], w] + active[b['activity_id'], w] <= 1)
     for loc in instance['supply']:
         lid = loc['location_id']
         occupants = [a for a in acts if lid in a['locations']]
@@ -455,6 +613,9 @@ def _cp_solve(instance, scenario, reductions, horizon, seconds, seed=11):
                 model.Add(sum(variables) <= 4)
                 model.Add(sum(x[a['activity_id'], w, n] for a in present if a['access_type'] == 'PC') <= 1)
             cap = _capacity(instance, lid, w, reductions)
+            # An accepted excess offer buys nights above nominal supply here, and is
+            # paid for in the objective like any other excess night.
+            cap += offered['excess_permit'].get((lid, w), 0) if scenario != 'A' else 0
             if scenario != 'B':
                 model.Add(sum(used) <= cap + (scenario == 'C'))
             excess = model.NewIntVar(0, slots, f'excess_{lid}_{w}')
@@ -471,9 +632,13 @@ def _cp_solve(instance, scenario, reductions, horizon, seconds, seed=11):
             if not present:
                 continue
             nights = []
+            # A contract may offer to run fewer concurrent teams than it is entitled
+            # to, freeing possession slots for a neighbour. It never raises the cap.
+            workfronts = min(p['number_of_workfronts'],
+                             offered['workfront_release'].get(contract, p['number_of_workfronts']))
             for n in range(1, slots + 1):
                 variables = [x[a['activity_id'], w, n] for a in present]
-                model.Add(sum(variables) <= p['number_of_workfronts'])
+                model.Add(sum(variables) <= workfronts)
                 used = model.NewBoolVar(f'contractnight_{contract}_{atype}_{w}_{n}')
                 model.AddMaxEquality(used, variables)
                 nights.append(used)
@@ -493,11 +658,26 @@ def _cp_solve(instance, scenario, reductions, horizon, seconds, seed=11):
     warm = _warm_start(instance, scenario, reductions, horizon)
     warm_x = {(r['activity_id'], r['week'], r['possession_night']) for r in warm}
     warm_ec = {(r['activity_id'], r['week']): r['eclo'] for r in warm}
+    # Two contracts that agreed to share a possession are steered onto one night by
+    # editing the warm start, not by hinting over the top of it: a hint set that
+    # contradicts itself misleads the search far more than it guides it.
+    for first, second in offered['co_share_hint']:
+        moves = [w for w in sorted(set(ranges.get(first, ())) & set(ranges.get(second, ())))
+                 if any((first, w, n) in x and (second, w, n) in x for n in range(1, slots + 1))]
+        if not moves:
+            continue
+        week = moves[0]
+        night = next(n for n in range(1, slots + 1)
+                     if (first, week, n) in x and (second, week, n) in x)
+        for aid in (first, second):
+            warm_x = {k for k in warm_x if not (k[0] == aid and k[1] == week)}
+            warm_x.add((aid, week, night))
     for key, variable in x.items():
         model.AddHint(variable, int(key in warm_x))
+    hinted_weeks = {(aid, w) for aid, w, _ in warm_x}
     for key, variable in active.items():
-        model.AddHint(variable, int(key in warm_ec))
-        model.AddHint(eclo[key], warm_ec.get(key, 0))
+        model.AddHint(variable, int(key in hinted_weeks))
+        model.AddHint(eclo[key], warm_ec.get(key, 0) if key in hinted_weeks else 0)
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = seconds
     solver.parameters.num_search_workers = 8
@@ -550,20 +730,23 @@ def solve(instance, scenario='C', **kwargs):
     if horizon > 520 or states > 200_000 or pairs > 2_000_000:
         raise ValueError('Instance exceeds this prototype\'s bounded model size: maximum 520 planning weeks, 200,000 activity/week/night options and 2,000,000 potential conflict constraints. Reduce the horizon or split the instance.')
     solver_name = 'OR-Tools CP-SAT' if cp_model else 'Constructive constraint heuristic'
+    relax = bool(kwargs.get('relax_planned_dates'))
     if cp_model:
-        placements, status, info = _cp_solve(instance, scenario, reductions, horizon, seconds, int(kwargs.get('seed', 11)))
+        placements, status, info = _cp_solve(instance, scenario, reductions, horizon, seconds,
+                                             int(kwargs.get('seed', 11)), kwargs.get('concessions', ()),
+                                             relax)
     else:
-        placements, status, info = _warm_start(instance, scenario, reductions, horizon), 'HEURISTIC', {'fallback': True}
+        placements, status, info = _warm_start(instance, 'C' if relax else scenario, reductions, horizon), 'HEURISTIC', {'fallback': True}
     # Expand the planning horizon under congestion; never silently omit work.
     demand = {a['activity_id']: a['total_accesses'] for a in instance['activities']}
     for attempt in range(3):
         done = Counter()
         for r in placements:
             done[r['activity_id']] += 1 + r['eclo'] * .5
-        if all(done[a] >= q for a, q in demand.items()) or scenario == 'B':
+        if all(done[a] >= q for a, q in demand.items()) or (scenario == 'B' and not relax):
             break
         horizon += max(12, math.ceil(sum(max(0, q - done[a]) for a, q in demand.items())) + 2)
-        placements = _greedy(instance, scenario, reductions, horizon)
+        placements = _greedy(instance, 'C' if relax else scenario, reductions, horizon)
         status = 'HEURISTIC_EXTENDED'
         info['horizon_extended'] = True
         info['fallback'] = True

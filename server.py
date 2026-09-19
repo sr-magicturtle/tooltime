@@ -1,210 +1,232 @@
-"""Local TOOLTIME application. Run: python server.py [--port 8765]."""
+"""TOOLTIME — the PS1 track access planner.
+
+    python3 server.py [--port 8765]
+
+Serves one thing: the access console. Judges upload the eight instance CSVs, run a
+scenario, read the verdict from an independent validator, ask why any activity sits
+where it does, and download the three submission files.
+
+Every route below is PS1. There is no demonstration mode and no synthetic data.
+"""
 from __future__ import annotations
+
 import argparse
-import csv
-import hashlib
 import io
 import json
-import os
-from pathlib import Path
+import mimetypes
 import sys
-import threading
-import time
 import traceback
-import uuid
 import zipfile
-from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT / '.deps'))
-from tooltime import engine, intelligence
+sys.path.insert(0, str(ROOT))
 
-RUNTIME = ROOT / '.runtime'
-RUNTIME.mkdir(exist_ok=True)
-LOCK = threading.RLock()
-INSTANCE = engine.load_instance(ROOT / 'PS1' / '01_data')
-INSTANCE_NAME = 'PS1 · public challenge instance'
-SOLUTIONS = {}
-TASKS = {}
-NIGHT = None
-REVISION = 1
-APPROVAL = None
-AUDIT_PATH = RUNTIME / 'audit.json'
-try:
-    AUDIT = json.loads(AUDIT_PATH.read_text(encoding='utf-8'))
-except (FileNotFoundError, ValueError):
-    AUDIT = []
+from tooltime import console as ps1
 
-def audit(action, detail):
-    entry = {'id': uuid.uuid4().hex[:8], 'time': datetime.now(timezone.utc).isoformat(), 'action': action, 'detail': detail}
-    AUDIT.append(entry)
-    AUDIT_PATH.write_text(json.dumps(AUDIT, indent=2), encoding='utf-8')
-    return entry
+SESSION = ps1.Session(ROOT / 'PS1' / '01_data')
+PUBLIC = ROOT / 'public'
+MAX_UPLOAD = 24_000_000          # eight CSVs of a large instance, with headroom
+CONTENT_TYPES = {'.html': 'text/html; charset=utf-8',
+                 '.js': 'text/javascript; charset=utf-8',
+                 '.css': 'text/css; charset=utf-8',
+                 '.svg': 'image/svg+xml',
+                 '.json': 'application/json'}
 
-def night():
-    global NIGHT
-    if NIGHT is None:
-        NIGHT = intelligence.get_demo()
-    return NIGHT
-
-def solve_task(task_id, scenario, instance):
-    try:
-        result = engine.solve(instance, scenario=scenario)
-        with LOCK:
-            # A result remains available for its task even if another instance was uploaded.
-            TASKS[task_id] = {'status': 'complete', 'solution': result}
-            if instance is INSTANCE:
-                SOLUTIONS[scenario] = result
-            audit('Programme solved', f"Scenario {scenario}: {result.get('status')}; {len(result.get('violations', []))} local validation findings.")
-    except Exception as exc:
-        traceback.print_exc()
-        TASKS[task_id] = {'status': 'error', 'error': str(exc)}
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, fmt, *args):
-        if '/api/task?' not in str(args):
-            super().log_message(fmt, *args)
+    server_version = 'TOOLTIME'
 
-    def send(self, data, status=200, content_type='application/json', filename=None):
-        if isinstance(data, (dict, list)):
-            data = json.dumps(data, default=str).encode()
-        elif isinstance(data, str):
-            data = data.encode()
+    def log_message(self, fmt, *args):
+        pass                                      # the console is the log
+
+    # ------------------------------------------------------------------ plumbing
+
+    def reply(self, payload, status=200, content_type='application/json', filename=None):
+        if isinstance(payload, (dict, list)):
+            body = json.dumps(payload, default=str).encode()
+        elif isinstance(payload, str):
+            body = payload.encode()
+        else:
+            body = payload
         self.send_response(status)
         self.send_header('Content-Type', content_type)
-        self.send_header('Content-Length', str(len(data)))
-        self.send_header('Cache-Control', 'no-store')
-        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Content-Length', str(len(body)))
         if filename:
             self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+        self.send_header('X-Content-Type-Options', 'nosniff')
         self.end_headers()
-        self.wfile.write(data)
+        self.wfile.write(body)
+
+    def zipped(self, files, filename):
+        bundle = io.BytesIO()
+        with zipfile.ZipFile(bundle, 'w', zipfile.ZIP_DEFLATED) as archive:
+            for name, text in files.items():
+                archive.writestr(name, text)
+        return self.reply(bundle.getvalue(), content_type='application/zip',
+                          filename=filename)
+
+    def body(self):
+        length = int(self.headers.get('Content-Length', 0) or 0)
+        if length < 0 or length > MAX_UPLOAD:
+            raise ValueError(f'Request body must be between 0 and {MAX_UPLOAD // 1_000_000} MB.')
+        parsed = json.loads(self.rfile.read(length) or '{}')
+        if not isinstance(parsed, dict):
+            raise ValueError('The request body must be a JSON object.')
+        return parsed
+
+    def serve_file(self, path):
+        target = (PUBLIC / path.lstrip('/')).resolve()
+        if not target.is_relative_to(PUBLIC.resolve()) or not target.is_file():
+            return self.reply({'error': 'Not found'}, 404)
+        guessed = CONTENT_TYPES.get(target.suffix) or \
+            mimetypes.guess_type(target.name)[0] or 'application/octet-stream'
+        return self.reply(target.read_bytes(), content_type=guessed)
+
+    # ---------------------------------------------------------------------- GET
 
     def do_GET(self):
         route = urlparse(self.path)
         params = parse_qs(route.query)
+        one = lambda key, default='': params.get(key, [default])[0]
         try:
-            if route.path == '/api/bootstrap':
-                with LOCK:
-                    return self.send({'instance': INSTANCE, 'instance_name': INSTANCE_NAME, 'night': night(), 'revision': REVISION, 'approval': APPROVAL, 'audit': AUDIT[-100:], 'solutions': SOLUTIONS})
-            if route.path == '/api/task':
-                return self.send(TASKS.get(params.get('id', [''])[0], {'status': 'error', 'error': 'Task not found.'}))
+            if route.path == '/api/state':
+                return self.reply(SESSION.snapshot())
+            if route.path == '/api/precheck':
+                return self.reply(SESSION.precheck(one('scenario', 'C').upper()))
+            if route.path == '/api/schedule':
+                found = SESSION.schedule(one('scenario', 'C').upper())
+                return self.reply(found or {'error': 'Run this scenario first.'},
+                                  200 if found else 409)
+            if route.path == '/api/explain':
+                found = SESSION.explain(one('scenario', 'C').upper(), one('activity'))
+                return self.reply(found or {'error': 'Run this scenario first.'},
+                                  200 if found else 409)
+            if route.path == '/api/calendar':
+                found = SESSION.calendar(one('scenario', 'C').upper())
+                return self.reply(found or {'error': 'Run this scenario first.'},
+                                  200 if found else 409)
+            if route.path == '/api/week':
+                try:
+                    number = int(one('week', '1'))
+                except ValueError:
+                    return self.reply({'error': 'week must be a whole number.'}, 400)
+                found = SESSION.week(one('scenario', 'C').upper(), number)
+                return self.reply(found or {'error': 'Run this scenario first.'},
+                                  200 if found else 409)
+            if route.path == '/api/dashboard':
+                found = SESSION.dashboard(one('scenario', 'C').upper())
+                return self.reply(found or {'error': 'Run this scenario first.'},
+                                  200 if found else 409)
+            if route.path == '/api/negotiation':
+                return self.reply(SESSION.negotiation(one('scenario', 'C').upper()))
             if route.path == '/api/export':
-                scenario = params.get('scenario', ['C'])[0]
-                result = SOLUTIONS.get(scenario)
-                if not result or not result.get('feasible'):
-                    return self.send({'error': 'Solve a complete, locally feasible scenario before exporting.'}, 409)
-                bundle = io.BytesIO()
-                with zipfile.ZipFile(bundle, 'w', zipfile.ZIP_DEFLATED) as archive:
-                    for name, content in engine.export_csv(result).items():
-                        archive.writestr(name, content)
-                return self.send(bundle.getvalue(), content_type='application/zip', filename=f'TOOLTIME_scenario_{scenario}.zip')
-            if route.path == '/api/briefs':
-                if not APPROVAL:
-                    return self.send({'error': 'Approve the current night plan first.'}, 409)
-                lines = ['TOOLTIME — approved demonstration team briefs', f'Revision {REVISION} · {APPROVAL["time"]}', 'SIMULATION ONLY — no messages sent; not an operational authority.', '']
-                for job in night()['jobs']:
-                    lines.extend([f'{job["id"]} · {job["title"]} · {job["team"]}', f'Status: {job["status"]}', f'Slot: {job.get("start") or "Unassigned"} – {job.get("end") or "Unassigned"}', f'Latest safe commitment: {job.get("latest_commit") or "Not applicable"}', str(job.get('reason', '')), ''])
-                return self.send('\n'.join(lines), content_type='text/plain; charset=utf-8', filename='TOOLTIME_team_briefs.txt')
-            target = ROOT / 'public' / ('index.html' if route.path == '/' else route.path.lstrip('/'))
-            if not target.resolve().is_relative_to((ROOT / 'public').resolve()) or not target.is_file():
-                return self.send({'error': 'Not found'}, 404)
-            ext = target.suffix
-            mime = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml'}.get(ext, 'application/octet-stream')
-            return self.send(target.read_bytes(), content_type=mime)
-        except Exception as exc:
+                scenario = one('scenario', 'C').upper()
+                try:
+                    files = SESSION.export(scenario, require_authorised=one('signed') == '1')
+                except ValueError as exc:
+                    return self.reply({'error': str(exc)}, 409)
+                return self.zipped(files, f'TOOLTIME_scenario_{scenario}.zip')
+            if route.path == '/api/export_all':
+                try:
+                    return self.reply(SESSION.export_all(),
+                                      content_type='application/zip',
+                                      filename='TOOLTIME_PS1_submission.zip')
+                except ValueError as exc:
+                    return self.reply({'error': str(exc)}, 409)
+            if route.path == '/':
+                return self.serve_file('index.html')
+            return self.serve_file(route.path)
+        except Exception as exc:                                   # noqa: BLE001
             traceback.print_exc()
-            return self.send({'error': str(exc)}, 500)
+            return self.reply({'error': str(exc)}, 500)
+
+    # --------------------------------------------------------------------- POST
 
     def do_POST(self):
-        global INSTANCE, INSTANCE_NAME, NIGHT, REVISION, APPROVAL
         try:
-            # Local app: refuse cross-origin browser mutations.
-            origin = self.headers.get('Origin')
-            host = self.headers.get('Host')
+            # Served locally and on a single origin; refuse cross-origin mutation.
+            origin, host = self.headers.get('Origin'), self.headers.get('Host')
             if origin and origin not in (f'http://{host}', f'https://{host}'):
-                return self.send({'error': 'Cross-origin requests are not allowed.'}, 403)
-            length = int(self.headers.get('Content-Length', 0))
-            if length < 0:
-                return self.send({'error': 'Content-Length must be nonnegative.'}, 400)
-            if length > 8_000_000:
-                return self.send({'error': 'Upload is larger than 8 MB.'}, 413)
-            body = json.loads(self.rfile.read(length) or '{}')
-            if not isinstance(body, dict):
-                return self.send({'error': 'The request body must be a JSON object.'}, 400)
+                return self.reply({'error': 'Cross-origin requests are not allowed.'}, 403)
             route = urlparse(self.path).path
-            if route == '/api/night':
-                delay = body.get('delay_minutes', 0)
-                if isinstance(delay, bool) or not isinstance(delay, int):
-                    return self.send({'error': 'Delay must be a whole number of minutes.'}, 400)
-                if not isinstance(body.get('use_sharing', True), bool):
-                    return self.send({'error': 'use_sharing must be true or false.'}, 400)
-                if not 0 <= delay <= 180:
-                    return self.send({'error': 'Delay must be 0–180 minutes.'}, 400)
-                candidate = intelligence.plan_night(delay_minutes=delay, use_sharing=bool(body.get('use_sharing', True)))
-                with LOCK:
-                    NIGHT = candidate
-                    REVISION += 1
-                    APPROVAL = None
-                    audit('Night replanned', f'Revision {REVISION}; start delay {delay} min; sharing {body.get("use_sharing", True)}. Previous approval invalidated.')
-                return self.send({'night': NIGHT, 'revision': REVISION, 'audit': AUDIT[-100:]})
-            if route == '/api/intake':
-                text = str(body.get('text', '')).strip()
-                if not text or len(text) > 20000:
-                    return self.send({'error': 'Enter a request of 1–20,000 characters.'}, 400)
-                result = intelligence.parse_request(text)
-                audit('Request extracted', 'Reader extracted a draft. Human review and readiness verification still required.')
-                return self.send(result)
-            if route == '/api/approve':
-                reason = str(body.get('reason', '')).strip()
-                if not reason:
-                    return self.send({'error': 'A review reason is required.'}, 400)
-                with LOCK:
-                    if int(body.get('revision', -1)) != REVISION:
-                        return self.send({'error': 'This plan changed. Review the latest revision before approving.'}, 409)
-                    checks = night().get('checks', [])
-                    if not checks or not all(check.get('passed') is True for check in checks):
-                        return self.send({'error': 'Resolve failed safety checks before approval.'}, 409)
-                    digest = hashlib.sha256(json.dumps(night(), sort_keys=True, default=str).encode()).hexdigest()[:16]
-                    APPROVAL = audit('Night approved', f'Revision {REVISION}; snapshot {digest}; reviewer: demo planning head; reason: {reason}')
-                return self.send({'approval': APPROVAL, 'audit': AUDIT[-100:]})
-            if route == '/api/solve':
-                scenario = body.get('scenario', 'C')
-                if scenario not in ('A', 'B', 'C'):
-                    return self.send({'error': 'Scenario must be A, B or C.'}, 400)
-                task_id = uuid.uuid4().hex
-                TASKS[task_id] = {'status': 'running'}
-                threading.Thread(target=solve_task, args=(task_id, scenario, INSTANCE), daemon=True).start()
-                return self.send({'task_id': task_id})
+            body = self.body()
+
             if route == '/api/upload':
-                files = body.get('files', {})
-                required = [p.name for p in (ROOT / 'PS1' / '01_data').glob('*.csv')]
-                if set(files) != set(required):
-                    return self.send({'error': 'Choose exactly the eight numbered instance CSV files (01_LINES through 08_ACTIVITY_DETAILS).'}, 400)
-                folder = RUNTIME / 'uploads' / uuid.uuid4().hex
-                folder.mkdir(parents=True)
-                for name in required:
-                    (folder / name).write_text(str(files[name]), encoding='utf-8')
-                candidate = engine.load_instance(folder)
-                with LOCK:
-                    INSTANCE = candidate
-                    INSTANCE_NAME = 'Uploaded challenge instance'
-                    SOLUTIONS.clear()
-                    audit('Instance uploaded', f'{len(candidate["activities"])} activities. Programme solutions reset.')
-                return self.send({'instance': INSTANCE, 'instance_name': INSTANCE_NAME, 'audit': AUDIT[-100:]})
-            return self.send({'error': 'Not found'}, 404)
-        except (ValueError, KeyError, TypeError) as exc:
-            return self.send({'error': str(exc)}, 400)
-        except Exception as exc:
+                files = body.get('files')
+                if not isinstance(files, dict) or not files:
+                    return self.reply({'error': 'Send the eight CSV files as '
+                                                '{"files": {"<name>.csv": "<text>"}}.'}, 400)
+                described, warnings = SESSION.load_files(
+                    files, str(body.get('name') or 'uploaded instance')[:120])
+                return self.reply({'instance': described, 'warnings': warnings,
+                                   'state': SESSION.snapshot()})
+            if route == '/api/reset':
+                SESSION.load_folder(ROOT / 'PS1' / '01_data', 'PS1 · provided instance')
+                return self.reply(SESSION.snapshot())
+            if route == '/api/solve':
+                scenario = str(body.get('scenario', 'C')).upper()
+                if scenario not in ps1.SCENARIOS:
+                    return self.reply({'error': 'Scenario must be A, B or C.'}, 400)
+                seconds = float(body.get('seconds', 20))
+                if not 1 <= seconds <= 120:
+                    return self.reply({'error': 'Solver budget must be 1–120 seconds.'}, 400)
+                return self.reply(SESSION.solve(scenario, seconds,
+                                                bool(body.get('use_agents')),
+                                                int(body.get('rounds', 3))))
+            if route == '/api/lock':
+                result = SESSION.add_lock(str(body.get('kind', 'pin')),
+                                          str(body.get('activity', '')),
+                                          body.get('week'), str(body.get('reason', '')))
+                return self.reply(result, 200 if result['accepted'] else 409)
+            if route == '/api/unlock':
+                return self.reply({'locks': SESSION.remove_lock(str(body.get('id', '')))})
+            if route == '/api/disrupt':
+                return self.reply(SESSION.disrupt(str(body.get('text', ''))))
+            if route == '/api/clear_disruptions':
+                return self.reply({'reductions': SESSION.clear_disruptions()})
+            if route == '/api/authorise':
+                result = SESSION.authorise(str(body.get('scenario', 'C')).upper(),
+                                           str(body.get('reason', '')))
+                return self.reply(result, 200 if result['ok'] else 409)
+            return self.reply({'error': f'Unknown route {route}'}, 404)
+        except ValueError as exc:
+            return self.reply({'error': str(exc)}, 400)
+        except Exception as exc:                                   # noqa: BLE001
             traceback.print_exc()
-            return self.send({'error': str(exc)}, 500)
+            return self.reply({'error': str(exc)}, 500)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description='Run the TOOLTIME PS1 access console.')
+    parser.add_argument('--port', type=int, default=8765)
+    parser.add_argument('--host', default='0.0.0.0')
+    args = parser.parse_args(argv)
+
+    try:
+        server = ThreadingHTTPServer((args.host, args.port), Handler)
+    except OSError as exc:
+        if exc.errno not in (48, 98):                     # address already in use
+            raise
+        print(f'Port {args.port} is already being used by something else.\n'
+              f'  Either stop it:   lsof -ti :{args.port} | xargs kill\n'
+              f'  or pick another:  python server.py --port {args.port + 1}')
+        return 1
+
+    instance = SESSION.snapshot()['instance']
+    print('TOOLTIME — PS1 access console')
+    print(f'  loaded  {instance["activities"]} activities · {instance["contracts"]} contracts '
+          f'· {instance["horizon_weeks"]} weeks')
+    print(f'  open    http://localhost:{args.port}/')
+    print('  stop    Ctrl+C', flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print('\nstopped')
+    return 0
+
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--port', type=int, default=int(os.environ.get('PORT', 8765)))
-    parser.add_argument('--host', default='127.0.0.1')
-    args = parser.parse_args()
-    print(f'TOOLTIME is running at http://{args.host}:{args.port}', flush=True)
-    ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
+    sys.exit(main())

@@ -1,2 +1,90 @@
 <!doctype html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="theme-color" content="#142e2a"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><title>TOOLTIME — Make every engineering hour count</title><link rel="stylesheet" href="/styles.css"></head><body><div id="app"><div class="boot"><span class="brand-mark">t.</span><h2>Getting the railway ready.</h2><p>Loading TOOLTIME…</p></div></div><div id="modal-root"></div><div id="toast" role="status" aria-live="polite"></div><script src="/app.js"></script></body></html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#152f29">
+<title>TOOLTIME — Track Access Planner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Manrope:wght@600;700;800&display=swap">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<div class="shell">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">t.</span>
+      <div class="brand-text">
+        <strong>TOOLTIME</strong>
+        <small>Track access planner</small>
+      </div>
+    </div>
+
+    <nav class="steps" id="steps" aria-label="Workflow">
+      <button data-step="instance" class="active">
+        <span class="num">1</span>
+        <span class="label">Instance<em id="nav-instance">not loaded</em></span>
+      </button>
+      <button data-step="plan">
+        <span class="num">2</span>
+        <span class="label">Plan<em id="nav-plan">no schedule yet</em></span>
+      </button>
+      <button data-step="explore">
+        <span class="num">3</span>
+        <span class="label">Explore<em id="nav-explore">run a scenario first</em></span>
+      </button>
+      <button data-step="export">
+        <span class="num">4</span>
+        <span class="label">Export<em id="nav-export">nothing ready</em></span>
+      </button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="engine-note">
+        <span class="dot" id="engine-dot"></span>
+        <div>
+          <strong id="engine-name">Constraint solver</strong>
+          <small id="engine-detail">OR-Tools CP-SAT</small>
+        </div>
+      </div>
+      <p class="disclaimer">Every schedule is re-checked by an independent validator before you see it.</p>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="crumbs"><span id="crumb-step">Instance</span></div>
+      <div class="topbar-right">
+        <span class="chip" id="chip-instance">No instance loaded</span>
+        <button class="ghost" id="btn-help" aria-label="About this tool">?</button>
+      </div>
+    </header>
+    <div class="content" id="view"></div>
+  </main>
+</div>
+
+<div class="drawer-scrim" id="scrim" hidden></div>
+<aside class="drawer" id="drawer" hidden aria-live="polite">
+  <div class="drawer-head">
+    <h2 id="drawer-title">Detail</h2>
+    <button class="ghost" id="drawer-close" aria-label="Close">×</button>
+  </div>
+  <div class="drawer-body" id="drawer-body"></div>
+</aside>
+
+<dialog id="modal">
+  <form method="dialog">
+    <div class="modal-head"><h2 id="modal-title">&nbsp;</h2></div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-foot" id="modal-foot"></div>
+  </form>
+</dialog>
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,101 +1,796 @@
-const $ = (selector, root = document) => root.querySelector(selector);
-const icons = {
- grid:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
- calendar:'M4 5h16v16H4z M8 3v4 M16 3v4 M4 10h16 M8 14h2 M14 14h2 M8 18h2',
- inbox:'M4 4h16l2 12v4H2v-4z M2 15h6l2 3h4l2-3h6',
- sparkle:'m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z',
- shield:'m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6z M8 12l3 3 5-6',
- train:'M6 3h12v14H6z M6 8h12 M9 12h.01 M15 12h.01 M7 21l2-4 M17 21l-2-4 M8 21h8',
- arrow:'M4 12h16 M15 7l5 5-5 5', chevron:'m9 6 6 6-6 6', down:'m7 10 5 5 5-5',
- plus:'M12 5v14 M5 12h14', check:'m5 12 4 4L19 6', close:'m6 6 12 12 M18 6 6 18',
- clock:'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18 M12 7v5l3 2',
- moon:'M20 14A8.5 8.5 0 0 1 10 4a8.5 8.5 0 1 0 10 10',
- help:'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18 M9.5 8a2.5 2.5 0 0 1 5 0c0 2-2.5 2-2.5 4 M12 16h.01',
- arrowUp:'M5 16 11 10l4 4 6-9 M15 5h6v6',
- link:'m10 14 4-4 M8 16l-2 2a4 4 0 0 1-5-5l4-4a4 4 0 0 1 6 0 M16 8l2-2a4 4 0 0 1 5 5l-4 4a4 4 0 0 1-6 0',
- alert:'m12 3 10 18H2z M12 9v5 M12 17h.01',
- box:'m3 7 9-4 9 4v11l-9 4-9-4z M3 7l9 4 9-4 M12 11v11 M7 5l10 5',
- user:'M12 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8 M4 21v-3a8 6 0 0 1 16 0v3',
- download:'M12 3v12 M7 10l5 5 5-5 M4 16v5h16v-5',
- upload:'M12 16V4 M7 9l5-5 5 5 M4 17v4h16v-4',
- sliders:'M4 7h16 M4 17h16 M8 4v6 M16 14v6',
- search:'M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14 M15 15l6 6',
- doc:'M5 3h10l4 4v14H5z M14 3v5h5 M8 12h8 M8 16h6',
- replay:'M3 11a9 9 0 1 1 2 7 M3 4v7h7',
- bolt:'m13 2-9 12h7l-1 8 10-13h-8z',
- play:'m8 4 12 8-12 8z',
- info:'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18 M12 11v6 M12 7h.01'
+/* TOOLTIME — PS1 track access planner.
+   Four steps: load an instance, plan it, explore the result, export the submission. */
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const esc = v => String(v ?? '').replace(/[&<>"']/g,
+  c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+const SCENARIOS = {
+  A: { name: 'Strict supply',
+       blurb: 'Capacity is fixed and early closures are not allowed. The only thing that can move is a deadline.',
+       scored: 'Scored on delay, weighted by contract priority.' },
+  B: { name: 'Strict schedule',
+       blurb: 'Every deadline must be met. You pay for it with early closures and extra access nights.',
+       scored: 'Scored on what hitting the dates costs.' },
+  C: { name: 'Balanced',
+       blurb: 'Neither is absolute. A little extra capacity is tolerated, and early closures are allowed in a two-week window.',
+       scored: 'Scored on delay and spend together.' }
 };
-function icon(name, cls=''){return `<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${icons[name]||icons.grid}"/></svg>`}
-function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function minutes(n){return `${Math.floor(Number(n||0)/60)}h ${Math.round(Number(n||0)%60)}m`}
-function clock(n){return `${String(Math.floor(n/60)%24).padStart(2,'0')}:${String(Math.round(n)%60).padStart(2,'0')}`}
-function fmt(n){return Number(n||0).toLocaleString(undefined,{maximumFractionDigits:1})}
-const state={page:'overview',data:null,scenario:'C',solving:false,search:'',filter:'all',delay:0,sharing:true,solutions:{}};
-const pageNames={overview:'Night overview',requests:'Work requests',programme:'Programme planner',intelligence:'Duration intelligence',audit:'Approvals & audit'};
-async function api(path,body){const response=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await response.json();if(!response.ok)throw new Error(data.error||'Something went wrong. Please try again.');return data}
-function toast(message){$('#toast').textContent=message;$('#toast').classList.add('visible');clearTimeout(window.toastTimer);window.toastTimer=setTimeout(()=>$('#toast').classList.remove('visible'),4500)}
-function btn(text,action,kind='',ico=''){return `<button class="btn ${kind}" data-action="${action}">${ico?icon(ico):''}${text}</button>`}
-function badge(text,kind='',ico=''){return `<span class="badge ${kind}">${ico?icon(ico):''}${text}</span>`}
-function render(){
- if(!state.data)return;
- const nav=Object.entries(pageNames).map(([key,title])=>`<button data-page="${key}" class="${key===state.page?'active':''}">${icon({overview:'grid',requests:'inbox',programme:'calendar',intelligence:'sparkle',audit:'shield'}[key])}<span>${title}</span>${key==='requests'?'<b class="count">4</b>':''}</button>`).join('');
- $('#app').innerHTML=`<div class="shell"><aside class="sidebar"><div class="brand"><span class="brand-mark">t.</span><div>TOOLTIME<small>EVERY ENGINEERING HOUR</small></div></div><div class="workspace-switch">${icon('train')}<span>Rail operations<small>Alpha & Beta network</small></span>${icon('down')}</div><div class="nav-label">WORKSPACE</div><nav class="nav" aria-label="Main navigation">${nav}</nav><div class="sidebar-bottom"><div class="system-ready"><span class="dot"></span>Planning workspace<p>Agent proposals.<br>Solver checked. Human reviewed.</p></div><div class="profile"><div class="avatar">PL</div><div><strong>Planning lead</strong><small>Demonstration workspace</small></div></div></div></aside><main class="main"><header class="topbar"><div class="breadcrumbs">Workspace ${icon('chevron')}<strong>${pageNames[state.page]}</strong></div><div class="topbar-right"><span class="demo-pill">HACKATHON PROTOTYPE</span><button class="icon-button" data-action="about" aria-label="About this prototype">${icon('help')}</button><div class="avatar" style="width:29px;height:29px;background:#e5ecdd;color:#6e875e">PL</div></div></header><div class="content">${views[state.page]() }<div class="footer-note"><span>TOOLTIME · Agents propose. Constraints verify. You decide.</span><span>PS1 / RAILWAY TRACK ACCESS OPTIMISATION</span></div></div></main></div>`;
+
+const state = {
+  step: 'instance', scenario: 'C', snap: null,
+  schedule: null, precheck: null, negotiation: null, busy: false,
+  // Re-rendering rebuilds the form, so these two live here rather than in the DOM.
+  seconds: 20, showNegotiation: false, uploadError: null,
+  dashboard: null, calendar: null, week: null, selectedWeek: null
+};
+
+/* ────────────────────────────────────────────────────────────── helpers */
+
+function toast(message, bad = false) {
+  const el = $('#toast');
+  el.textContent = message;
+  el.className = 'show' + (bad ? ' bad' : '');
+  clearTimeout(window._toast);
+  window._toast = setTimeout(() => (el.className = ''), 4600);
 }
-function heading(eyebrow,title,subtitle,actions=''){return `<div class="page-heading"><div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p>${subtitle}</p></div><div class="heading-actions">${actions}</div></div>`}
-function metric(label,value,unit,foot,ico,featured=false){return `<div class="metric ${featured?'featured':''}"><div class="metric-label">${label}${icon(ico)}</div><div class="metric-value">${value}<small>${unit}</small></div><div class="metric-foot">${foot}</div></div>`}
-function isScheduled(j){return ['scheduled','confirmed'].includes(j.status)}
-function overview(){const n=state.data.night,m=n.metrics,base=n.baseline?.metrics||{};const day=new Date(n.window.date+'T12:00:00').toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short',year:'numeric'});const complete=n.jobs.filter(isScheduled).length;const gain=Number(m.tooltime_percent||0)-Number(base.tooltime_percent||0);const checks=n.checks.every(c=>c.passed);
- return heading('NIGHT OPERATIONS','Make every engineering hour count.','A clearer night plan. More time on tools. A safe railway by first train.',`${btn('Simulate a delay','delay','','sliders')}${btn('New request','intake','primary','plus')}`)+`<div class="overview-strip"><strong>${icon('moon')}${esc(day)} &nbsp; / &nbsp; ${esc(n.window.start)} – ${esc(n.window.end)}${state.delay?` &nbsp; · &nbsp; Opening delayed ${state.delay}m to ${clock(n.window.start_minute+state.delay)}`:''}</strong><span>LINE ALPHA &nbsp; · &nbsp; <span class="dot"></span>ILLUSTRATIVE NIGHT</span></div><div class="metrics">${metric('Productive tool time',fmt(m.tooltime_percent),'%',`<span class="mini-tag">${gain>=0?'+':''}${fmt(gain)} pp</span> vs separate setup`,'clock',true)}${metric('Jobs ready to run',complete,`/ ${n.jobs.length}`,`${m.readiness_blocked_count} readiness block · ${m.deferred_count} capacity deferral`,'check')}${metric('Shared overhead saved',fmt(m.overhead_saved_minutes),'min',`Shared preparation + reinstatement`,'link')}${metric('First-train margin',fmt(m.first_train_margin_minutes),'min',`<span class="mini-tag ${m.first_train_margin_minutes<10?'orange':''}">${checks?'Protected':'Review needed'}</span> after p90 + rollback`,'shield')}</div><div class="split"><div><div class="card"><div class="card-head"><div><h2>Tonight’s possession plan</h2><div class="card-sub">Two clocks for every job. Work time and time to hand back.</div></div>${badge(state.data.approval?'Approved':`Draft · v${state.data.revision}`,state.data.approval?'':'gray',state.data.approval?'check':'doc')}</div><div class="night-note">${icon('bolt')}<span>${state.sharing?'<strong>Shared isolation enabled.</strong> Compatible jobs share preparation across separate workfaces.':'<strong>Separate setups.</strong> Each isolated job reserves its own preparation window.'}</span></div>${timeline(n)}<button class="commit-banner" data-action="clock-info">${icon('clock')}<span><strong>The point of no return</strong> · ${n.jobs.filter(isScheduled).sort((a,b)=>a.latest_commit_minute-b.latest_commit_minute)[0]?.latest_commit||'—'} latest safe work start</span>${icon('arrow')}</button><div class="insight">${icon('sparkle')}<span>${m.overhead_saved_minutes>0?`<strong>${fmt(m.overhead_saved_minutes)} minutes reclaimed</strong> through shared preparation and reinstatement.`:'Setup sharing can create more usable time for compatible teams.'}</span><button class="text-action" data-action="sharing">${state.sharing?'Compare baseline':'Enable sharing'} →</button></div></div>${network()}</div><aside class="right-rail">${decision(n)}${agents(n,false)}</aside></div><div class="approval-bar"><div class="approval-text"><div class="approval-icon">${icon('shield')}</div><div><strong>${state.data.approval?'Reviewed. Approved. Ready for team briefs.':checks?'The constraints check out. The decision is yours.':'This draft needs attention before approval.'}</strong><p>${n.checks.filter(x=>x.passed).length} / ${n.checks.length} checks passed · ${complete} scheduled · ${n.jobs.length-complete} deferred · ${state.data.approval?'Approval recorded':'Human review required'}</p></div></div>${state.data.approval?'<a class="btn primary" href="/api/briefs">'+icon('download')+'Download team briefs</a>':btn('Review & approve','approve','primary','arrow')}</div>`;
+
+async function api(path, body) {
+  const res = await fetch('/api/' + path, body === undefined ? {} : {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Something went wrong.');
+  return data;
 }
-function timeline(n){const low=n.window.start_minute,span=n.window.duration_minutes;const left=x=>Math.max(0,Math.min(100,(x-low)/span*100));const width=(a,b)=>Math.max(0,Math.min(100-left(a),(b-a)/span*100));
- const rows=n.jobs.map((j,i)=>{const scheduled=isScheduled(j);const color=i===1?'b':i===2?'c':'';const prep=Number(j.setup??(j.isolation?55:20));const start=Number(j.start_minute),end=Number(j.end_minute),release=Number(j.release_minute);const p50end=start+Number(j.p50);const rollbackStart=release-Number(j.rollback);return `<div class="timeline-row"><div class="job-label"><span class="job-dot ${i===2?'coral':!scheduled?'gray':''}"></span><div><strong>${esc(({A:'Signal cable renewal',B:'Rail grinding',C:'CCTV installation',D:'Point machine overhaul'})[j.id]||j.title)}</strong><small>${esc(j.team)} · ${esc(j.id)}</small></div></div><div class="track ${!scheduled?'deferred-track':''}">${scheduled?`<span class="bar prep" style="left:${left(start-prep)}%;width:${width(start-prep,start)}%" title="Travel, protection and setup"></span><button class="bar work ${color}" style="left:${left(start)}%;width:${width(start,end)}%" data-job="${esc(j.id)}" aria-label="View ${esc(j.title)}"><span class="bar-label">${esc(j.start)} – ${esc(j.end)}</span></button><span class="bar uncertainty" style="left:${left(p50end)}%;width:${width(p50end,end)}%"></span><span class="bar hold" style="left:${left(end)}%;width:${width(end,rollbackStart)}%" title="Wait for the shared possession to be ready for handback"></span><span class="bar rollback" style="left:${left(rollbackStart)}%;width:${width(rollbackStart,release)}%" title="Rollback ${j.rollback} minutes">${j.rollback}m</span><span class="commit-line" style="left:${left(j.latest_commit_minute)}%" title="Latest safe work start ${esc(j.latest_commit)}"></span>`:`${icon('alert')}<span>${j.ready?'Does not fit safely · retained for replan':'Readiness blocked · not scheduled'}</span>`}</div></div>`}).join('');
- return `<div class="timeline"><div class="timeline-header"><div class="smallcaps">WORK REQUEST</div><div class="time-axis">${Array.from({length:6},(_,i)=>`<span>${clock(low+i*span/5)}</span>`).join('')}</div></div>${rows}<div class="timeline-legend"><span class="legend-item"><i class="swatch"></i>p50 work</span><span class="legend-item"><i class="swatch hatch"></i>p90 allowance</span><span class="legend-item"><i class="swatch gray"></i>Setup / hold / rollback</span><span class="legend-item"><i class="swatch line"></i>Latest safe start</span></div></div>`;
+
+const plan = () => state.snap?.scenarios?.[state.scenario] || null;
+const ready = s => state.snap?.scenarios?.[s]?.feasible;
+
+function openDrawer(title, html) {
+  $('#drawer-title').textContent = title;
+  $('#drawer-body').innerHTML = html;
+  $('#drawer').hidden = false;
+  $('#scrim').hidden = false;
 }
-function network(){return `<div class="card network-card"><div class="card-head"><div><h2>One network. Connected constraints.</h2><div class="card-sub">Separate workfaces. Shared isolation. Independent lines except Live crossover.</div></div>${badge('ALP / BET','gray')}</div><div class="network-layout"><div style="width:100%"><svg viewBox="0 0 630 132" class="network-svg" role="img" aria-label="Line Alpha and Line Beta schematics with interchange hubs H01 and H02"><path d="M34 35H592" fill="none" stroke="#b8c7ab" stroke-width="3"/><path d="M34 99H592" fill="none" stroke="#dfc2a1" stroke-width="3"/><path d="M96 35H220" fill="none" stroke="#5b8060" stroke-width="5"/><path d="M282 35v64 M344 35v64" fill="none" stroke="#a5bba0" stroke-width="8"/><path d="M282 35v64 M344 35v64" fill="none" stroke="#fff" stroke-width="4"/>${['S01','S02','S03','S04','H01','H02','S05','S06','S07','S08'].map((s,i)=>`<circle cx="${34+i*62}" cy="35" r="${i===4||i===5?6:4}" fill="#fff" stroke="${i===1||i===2||i===3?'#5b8060':'#aabc9c'}" stroke-width="2"/><text x="${34+i*62}" y="${i===4||i===5?71:18}" text-anchor="middle" font-size="9" fill="#7d9172" font-family="Arial">${s}</text>`).join('')}${['S11','S12','S13','S14','H01','H02','S15','S16','S17','S18'].map((s,i)=>`<circle cx="${34+i*62}" cy="99" r="${i===4||i===5?6:4}" fill="#fff" stroke="#ccab81" stroke-width="2"/>${i!==4&&i!==5?`<text x="${34+i*62}" y="120" text-anchor="middle" font-size="9" fill="#a28e70" font-family="Arial">${s}</text>`:''}`).join('')}<rect x="114" y="48" width="84" height="19" rx="4" fill="#eef4e9"/><text x="156" y="61" text-anchor="middle" font-size="8" fill="#68805a" font-family="Arial">ALP · tonight’s work</text></svg><div class="network-caption"><span class="legend-item"><span class="dot" style="background:#7d9b6c"></span>Line Alpha</span><span class="legend-item"><span class="dot" style="background:#d2ab7a"></span>Line Beta</span><span class="legend-item">○ Shared interchange hubs</span></div></div></div></div>`}
-function decision(n){const job=n.jobs.find(j=>!j.ready)||n.jobs.find(j=>!isScheduled(j));if(!job)return `<div class="card"><div class="decision-head">${icon('check')}<h2>All requests ready</h2></div><div class="decision-body"><p>Every request passed readiness checks.</p></div></div>`;const blocks=(job.blockers||[]).map(b=>typeof b==='string'?b:b.detail||b.reason||JSON.stringify(b));return `<div class="card"><div class="decision-head">${icon('alert')}<h2>One job needs attention</h2></div><div class="decision-body">${badge('HELD AT READINESS GATE','amber')}<h3>${esc(job.title)}</h3><p>${esc(job.team)} · ${esc(job.location)}</p>${blocks.slice(0,2).map((b,i)=>`<div class="issue-item">${icon(i?'user':'box')}<span>${esc(b)}</span></div>`).join('')}<div class="earliest"><span>Earliest possible release</span><strong>${esc(job.earliest_date||job.earliest_schedulable_date||'After readiness review')}</strong></div><button class="btn small" data-job="${esc(job.id)}">Review blockers ${icon('arrow')}</button></div></div>`}
-function agents(n,full=false){let events=n.events||[];if(!full){const selected=['Reader','Checker','Requester','Planner'];events=selected.map(a=>events.find(e=>String(e.agent).toLowerCase().includes(a.toLowerCase()))).filter(Boolean);if(events.length<3)events=n.events.slice(0,4)}return `<div class="card agent-card"><div class="agent-head"><h2>Inside the planning room</h2><span class="agent-status"><span class="dot"></span>TRACE</span></div><div class="agent-events" ${full?'style="max-height:none"':''}>${events.map((e,i)=>`<div class="agent-event"><div class="agent-avatar">${esc(String(e.agent).slice(0,1))}</div><div><strong>${esc(e.agent)}</strong><span class="event-time">step ${i+1}</span><p>${esc(e.message)}</p></div></div>`).join('')}</div><div class="agent-footer">Rule-based agent simulation · solver-verified proposals ${full?'':`<button class="text-action" data-action="trace">View trace →</button>`}</div></div>`}
-function requests(){const n=state.data.night;const rows=n.jobs.filter(j=>(state.filter==='all'||state.filter==='ready'&&j.ready||state.filter==='blocked'&&!j.ready)&&`${j.title} ${j.team} ${j.id}`.toLowerCase().includes(state.search.toLowerCase()));return heading('INTAKE & READINESS','Good nights start before midnight.','Every request checked for the people, parts and plant it needs.',btn('New request','intake','primary','plus'))+`<div class="metrics">${metric('Night requests',n.jobs.length,'','Illustrative operations dataset','inbox')}${metric('Readiness cleared',n.jobs.filter(j=>j.ready).length,'','Eligible for solver consideration','check',true)}${metric('Readiness blocked',n.jobs.filter(j=>!j.ready).length,'','Resolve blockers before allocation','alert')}${metric('Structured intake','4','roles','Reader · Checker · Requester · Planner','sparkle')}</div><div class="card"><div class="table-toolbar"><div class="search">${icon('search')}<input id="request-search" aria-label="Search requests" placeholder="Search work requests…" value="${esc(state.search)}"></div><select class="filter-select" id="request-filter" aria-label="Filter readiness"><option value="all" ${state.filter==='all'?'selected':''}>All readiness states</option><option value="ready" ${state.filter==='ready'?'selected':''}>Ready for planning</option><option value="blocked" ${state.filter==='blocked'?'selected':''}>Blocked</option></select></div><div class="table-wrap"><table><thead><tr><th>Work request</th><th>Team / workface</th><th>Duration p50 → p90</th><th>Readiness</th><th></th></tr></thead><tbody>${rows.map(j=>`<tr><td><span class="table-title">${esc(j.title)}</span><span class="table-sub">${esc(j.id)} · ${esc(j.system)} ${j.isolation?'· Isolation required':''}</span></td><td>${esc(j.team)}<span class="table-sub">${esc(j.location)}</span></td><td>${j.p50} → <strong>${j.p90} min</strong><span class="table-sub">+ ${j.rollback} min safe handback</span></td><td>${badge(j.ready?'Ready for planning':'Readiness blocked',j.ready?'':'amber',j.ready?'check':'alert')}</td><td><button class="icon-button" data-job="${esc(j.id)}" aria-label="View ${esc(j.title)}">${icon('chevron')}</button></td></tr>`).join('')||'<tr><td colspan="5">No requests match this filter.</td></tr>'}</tbody></table></div></div><div class="callout">${icon('info')} These four requests demonstrate TOOLTIME’s engineering-hour workflow. The complete 54-activity PS1 workload is managed separately in Programme planner. Readiness, parts and rosters here are synthetic.</div>`}
-const scenarioInfo={A:['Strict supply','Keep supply fixed. Accept priority-weighted schedule slip. No ECLO.'],B:['Strict schedule','Meet planned deadlines. Allow extra access and penalise ECLO.'],C:['Balanced trade-off','Balance delay and supply. At most one extra slot per location-week.']};
-function programme(){const ins=state.data.instance,sol=state.solutions[state.scenario],acts=ins.activities||[],work=acts.reduce((sum,a)=>sum+Number(a.total_accesses),0);return heading('COMPLETE WORKLOAD PLANNING','The whole programme. Every access accounted for.',`${esc(state.data.instance_name)} · ${acts.length} activities · ${(ins.projects||[]).length} contracts · ${fmt(work)} required access units`,`${btn('Upload instance','upload','','upload')}${sol?.feasible?`<a class="btn primary" href="/api/export?scenario=${state.scenario}">${icon('download')}Export 3 CSVs</a>`:''}`)+`<div class="scenario-grid">${Object.entries(scenarioInfo).map(([s,[title,desc]])=>`<button class="scenario-option ${state.scenario===s?'active':''}" data-scenario="${s}" ${state.solving?'disabled':''}><span class="scenario-letter">${s}</span>${state.scenario===s?`<span class="selected">${icon('check')}</span>`:''}<strong>${title}</strong><p>${desc}</p></button>`).join('')}</div>${state.solving?`<div class="card empty-state">${icon('sparkle')}<h3>Finding room for every activity.</h3><p>Building a complete programme, checking spatial exclusions and balancing Scenario ${state.scenario}’s constraints. Larger instances can take longer.</p><div class="progress"><span></span></div><p>OR-Tools CP-SAT · full workload remains mandatory</p></div>`:sol?programmeResult(sol):`<div class="card empty-state">${icon('calendar')}<h3>A plan that can show its working.</h3><p>Run Scenario ${state.scenario} against all eight instance files. The scheduler accounts for buffers, live-rail mirroring, shared hubs, co-sharing, workfronts and dependencies.</p>${btn(`Generate Scenario ${state.scenario} plan`,'solve','primary','sparkle')}<p style="margin-top:19px;font-size:10px">Exports follow the published submission schema. Independent local checker; official validator not supplied.</p></div>`}`}
-function programmeResult(sol){const m=sol.metrics;const acts=sol.activities||[];const horizon=Math.max(30,...(sol.access||[]).map(a=>Number(a.week)));const plotWeeks=Math.min(60,horizon);const groups={};for(const a of sol.access||[]){const contract=acts.find(x=>x.activity_id===a.activity_id)?.contract_number||a.activity_id;(groups[contract]??=[]).push(a)}return `<div class="metrics">${metric('Workload delivered',fmt(m.completion_pct),'%',`${m.activities_complete} / ${m.activities_total} activities complete`,'check',true)}${metric('Local hard violations',m.hard_violations??sol.violations.length,'',sol.feasible?'All local checks passed':'Review violations before export','shield')}${metric('Completion overrun',fmt(m.overrun_days_total),'days',`${m.contracts_overrunning} contracts beyond target`,'clock')}${metric('Objective penalty',fmt(m.objective_score),'',`Lower is better · ${fmt(m.solve_seconds)} sec`,'sliders')}</div><div class="card"><div class="card-head"><div><h2>Programme access map</h2><div class="card-sub">Weeks 1–${plotWeeks} of ${horizon} · ${(sol.solver||'CP-SAT')} · ${esc(sol.status)}</div></div><div style="display:flex;gap:8px">${btn('Conflict reasons','conflicts','small','shield')}${btn('Recalculate','solve','small','replay')}</div></div><div class="table-wrap"><div class="programme-grid" style="min-width:620px"><div></div><div class="programme-axis" style="grid-template-columns:repeat(${plotWeeks},1fr)">${Array.from({length:plotWeeks},(_,i)=>`<span>${i+1}</span>`).join('')}</div>${Object.entries(groups).sort().map(([contract,access])=>`<div class="programme-label">${esc(contract)}</div><div class="programme-weeks" style="grid-template-columns:repeat(${plotWeeks},1fr)">${Array.from({length:plotWeeks},(_,i)=>{const rows=access.filter(a=>Number(a.week)===i+1);return `<div class="week-cell ${rows.length?'used':''} ${rows.some(a=>Number(a.eclo))?'eclo':''}" title="${esc(contract)} · Week ${i+1} · ${rows.length} accesses"></div>`}).join('')}</div>`).join('')}</div></div><div class="insight">${icon('link')}<span>${fmt(m.co_shared_accesses)} co-shared accesses · ${fmt(m.eclo_nights_total)} ECLO accesses · ${fmt(m.excess_access_nights_total)} extra location-week slots</span></div></div><div class="two-col section-space"><div class="card"><div class="card-head"><h2>Contract completion</h2>${badge(sol.feasible?'Locally feasible':'Needs attention',sol.feasible?'':'red')}</div><div class="table-wrap"><table><thead><tr><th>Contract</th><th>Completion</th><th>Overrun</th></tr></thead><tbody>${(sol.results||[]).map(r=>`<tr><td><strong>${esc(r.contract_number)}</strong></td><td>${esc(r.simulated_completion_date)}</td><td>${badge(Number(r.overrun_days)?`${r.overrun_days} days`:'On target',Number(r.overrun_days)?'amber':'')}</td></tr>`).join('')}</tbody></table></div></div><div><div class="card"><div class="card-head"><h2>Why this plan?</h2>${icon('sparkle')}</div><div class="validation-list">${(sol.explanations||[]).map(e=>`<div class="check">${icon('info')}<div>${esc(typeof e==='string'?e:e.detail||e.message||JSON.stringify(e))}</div></div>`).join('')}${(sol.violations||[]).map(v=>`<div class="check failed">${icon('alert')}<div><strong>${esc(v.rule)}</strong>${esc(v.detail)}</div></div>`).join('')}</div></div><div class="callout amber">The judge’s reference validator is not included in the folder. “Locally feasible” means the independent checks implemented in this prototype pass; it is not official certification.</div></div></div>`}
-function intelligenceView(){const n=state.data.night,model=n.model||{};const max=Math.max(...n.jobs.map(j=>j.p90))+30;return heading('PREDICTIVE DURATION','Plan for uncertainty. Protect the handback.','Two learned quantiles make optimistic estimates visible before the night starts.',btn('Model details','model','','info'))+`<div class="two-col"><div class="card"><div class="card-head"><div><h2>The estimate is only the beginning.</h2><div class="card-sub">Predicted work duration in minutes · rollback reserved separately</div></div>${badge('SYNTHETIC TRAINING','amber')}</div><div class="model-chart">${n.jobs.map(j=>`<div class="quantile-row"><div class="quantile-label"><strong>${esc(j.title)}</strong><span>p50 ${j.p50}m &nbsp; / &nbsp; p90 ${j.p90}m</span></div><div class="quantile-track"><div class="quantile-bar" style="width:${j.p90/max*100}%">${j.p50}m</div><div class="quantile-tail" style="left:${j.p50/max*100}%;width:${(j.p90-j.p50)/max*100}%"></div></div></div>`).join('')}</div><div class="model-explainer">The solid bar is the model’s median. The hatched portion reserves time up to its 90th-percentile estimate. Neither is a guaranteed bound.<div class="model-stat-row"><div><strong>1,200</strong><span>seeded synthetic records</span></div><div><strong>2</strong><span>quantile boosting models</span></div><div><strong>0</strong><span>operational history records</span></div></div></div></div><div class="card"><div class="card-head"><div><h2>Two clocks. Two decisions.</h2><div class="card-sub">The work must end. The railway must be returned.</div></div>${icon('clock')}</div><div class="model-explainer"><div class="callout"><strong>Latest safe work start</strong><br>First train − p90 work − rollback<br><span style="font-size:10px">Remaining preparation must finish before this time.</span></div><div class="callout amber"><strong>Rollback trigger</strong><br>First train − rollback<br><span style="font-size:10px">Stop work at this boundary; finish restoration before first train.</span></div>${n.jobs.filter(isScheduled).map(j=>`<div class="check">${icon('shield')}<div><strong>${esc(j.title)}</strong><small>Latest work start ${j.latest_commit} · Begin rollback by ${clock(n.window.end_minute-j.rollback)} · Reserve ${j.rollback} min</small></div></div>`).join('')}<p>The planner cannot negotiate away rollback time or a physical safety rule. It can only propose a different allocation for the solver to check.</p></div></div></div><div class="two-col section-space">${agents(n,true)}<div class="card"><div class="card-head"><div><h2>Zoom out: can the backlog stabilise?</h2><div class="card-sub">Illustrative monthly capacity, not a one-night schedule</div></div>${icon('arrowUp')}</div><div class="queue-form"><div class="field"><label for="arrival">New work arriving each month (tool hours)</label><input id="arrival" type="number" min="0" max="10000" value="180"></div><div class="field"><label for="capacity">Monthly productive capacity (tool hours)</label><input id="capacity" type="number" min="0" max="10000" value="150"></div><div class="queue-result" id="queue-result"></div><p class="inline-help">A fluid capacity calculation: arrivals minus productive capacity. It does not model stochastic queues, utilisation variability or waiting-time distributions.</p></div></div></div>`}
-function auditView(){const a=state.data.audit||[],n=state.data.night;return heading('HUMAN AUTHORITY','A decision you can trace.','Every approval has a reason. Every changed plan returns for review.',btn('Review night plan','approve','primary','shield'))+`<div class="two-col"><div class="card"><div class="card-head"><h2>Approval & change history</h2>${badge(`${a.length} events`,'gray')}</div>${a.length?a.slice().reverse().map(e=>`<div class="audit-entry">${icon(e.action.includes('approved')?'shield':'doc')}<div><strong>${esc(e.action)}</strong><p>${esc(e.detail)}</p><time>${esc(new Date(e.time).toLocaleString())} · ${esc(e.id)}</time></div></div>`).join(''):'<div class="empty-state"><h3>No decisions yet.</h3><p>Review a plan, run a scenario, or simulate a delay to create a traceable event.</p></div>'}</div><div class="card"><div class="card-head"><h2>Current night safety checks</h2>${badge(`v${state.data.revision}`,'gray')}</div><div class="validation-list">${n.checks.map(c=>`<div class="check ${c.passed?'':'failed'}">${icon(c.passed?'check':'alert')}<div><strong>${esc(c.name)}</strong><small>${esc(c.detail)}</small></div></div>`).join('')}</div></div></div><div class="callout">Approval is recorded in this local demonstration workspace with the plan revision and snapshot hash. Downloadable team briefs simulate distribution; no email or operational instruction is sent.</div>`}
-const views={overview,requests,programme,intelligence:intelligenceView,audit:auditView};
-function queue(){const arrival=Number($('#arrival')?.value||0),capacity=Number($('#capacity')?.value||0),gap=Math.max(0,arrival-capacity);if($('#queue-result'))$('#queue-result').innerHTML=gap?`<strong>+${fmt(gap)} tool hours / month</strong><br>Additional productive capacity needed to stop backlog growth at these average rates.`:`<strong>${fmt(capacity-arrival)} hours of headroom</strong><br>Average capacity meets arrivals. Variability can still create queues.`}
-function modal(title,body,footer='',wide=false){$('#modal-root').innerHTML=`<div class="modal-backdrop"><section class="modal ${wide?'wide':''}" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-head"><h2 id="modal-title">${title}</h2><button class="close" data-action="close" aria-label="Close dialog">${icon('close')}</button></div><div class="modal-body">${body}</div>${footer?`<div class="modal-footer">${footer}</div>`:''}</section></div>`;setTimeout(()=>$('.modal input,.modal textarea,.modal button')?.focus(),50)}
-function closeModal(){$('#modal-root').innerHTML=''}
-const sampleEmail='Hi Planning,\n\nPlease book signal cable replacement on ALP S02–S03 eastbound on Tuesday. We estimate 120 minutes with a crew of 4. Traction isolation is required. Our supervisor has signalling competency and we need a cable trolley.\n\nWe can move to Thursday if needed. Parts are at Alpha depot.\nThanks, Team A';
-function intake(){modal('One request. Less back and forth.',`<p class="modal-lead">Paste the email your team would have sent. Reader extracts a structured draft and asks for the most important missing detail.</p><div class="modal-tabs"><button class="btn small primary" data-action="intake">Paste an email</button><button class="btn small" data-action="intake-form">Use a simple form</button></div><div class="field"><label for="request-text">Work request email</label><textarea id="request-text" placeholder="Describe the work, location, crew and equipment…">${sampleEmail}</textarea></div><div id="extraction-result"></div><p class="inline-help">Local rule-based Reader · extracts a draft for review · does not add unverified work to the schedule</p>`,btn('Cancel','close')+btn('Extract request','extract','primary','sparkle'))}
-function showJob(id){const j=state.data.night.jobs.find(x=>x.id===id);if(!j)return;const ready=j.ready;modal(esc(j.title),`<div style="display:flex;gap:8px">${badge(ready?'Readiness cleared':'Readiness blocked',ready?'':'amber')}${badge(esc(j.team),'gray')}</div><div class="detail-grid">${[['Workface',j.location],['Electrical section',j.section],['Team estimate',`${j.estimated_minutes} min`],['Predicted p50 / p90',`${j.p50} / ${j.p90} min`],['Rollback reserve',`${j.rollback} min`],['Latest safe work start',j.latest_commit||'Not assigned'],['Latest start of setup',j.latest_commit_minute!=null?clock(j.latest_commit_minute-j.setup):'Not assigned'],['Rollback trigger',clock(state.data.night.window.end_minute-j.rollback)]].map(([k,v])=>`<div class="detail-item"><label>${k}</label><strong>${esc(v)}</strong></div>`).join('')}</div><div class="callout ${ready?'':'amber'}">${esc(j.reason||'Awaiting readiness checks')}</div>${(j.blockers||[]).map(b=>`<div class="issue-item">${icon('alert')}<span>${esc(typeof b==='string'?b:b.detail||b.reason||JSON.stringify(b))}</span></div>`).join('')}<p class="inline-help">${esc(j.earliest_date?`Earliest workable date: ${j.earliest_date}. `:'')}Resources and timing are illustrative. Shared electrical isolation does not waive worksite separation.</p>`,btn('Close','close')+(ready?btn('View prediction','go-intelligence','primary','arrow'):btn('Open request intake','intake','primary','arrow')))}
-function delayModal(){modal('A late last train changes the night.',`<p class="modal-lead">Move the access opening later while keeping first train at ${state.data.night.window.end}. The solver will preserve rollback and defer any job that no longer fits.</p><div class="field"><label for="delay-range">Access-opening delay: <strong id="delay-value">${state.delay} minutes</strong></label><input id="delay-range" type="range" min="0" max="120" step="5" value="${state.delay}"></div><label class="switch-label" for="sharing-check">Allow compatible teams to share isolation<input id="sharing-check" type="checkbox" ${state.sharing?'checked':''}></label><div class="callout amber">A replan creates a new revision and clears approval. This simulates a delayed access opening, not an interruption after work has begun.</div>`,btn('Cancel','close')+btn('Replan this night','replan','primary','replay'))}
-function approvalModal(){const n=state.data.night;modal('Your review is the final gate.',`<p class="modal-lead">Review revision ${state.data.revision}. Approval confirms this demonstration plan and unlocks downloadable team briefs.</p><div class="validation-list" style="padding:0">${n.checks.map(c=>`<div class="check ${c.passed?'':'failed'}">${icon(c.passed?'check':'alert')}<div><strong>${esc(c.name)}</strong><small>${esc(c.detail)}</small></div></div>`).join('')}</div><div class="field" style="margin-top:20px"><label for="approval-reason">Review note / approval reason</label><textarea id="approval-reason" style="min-height:80px" placeholder="Record the basis for your decision…">Reviewed workface separation, readiness blockers and rollback reserves. Approve the scheduled jobs; retain blocked work for follow-up.</textarea></div><p class="inline-help">No messages will be sent. Any later replan requires a fresh approval.</p>`,btn('Return to plan','close')+btn(state.data.approval?'Update approval note':'Approve this revision','confirm-approve','primary','check'))}
-async function solve(){if(state.solving)return;state.solving=true;render();try{const scenario=state.scenario;const {task_id}=await api('/api/solve',{scenario});const poll=async()=>{try{const task=await api(`/api/task?id=${task_id}`);if(task.status==='running'){setTimeout(poll,1300);return}state.solving=false;if(task.status==='error')throw new Error(task.error);state.solutions[scenario]=task.solution;const fresh=await api('/api/bootstrap');state.data.audit=fresh.audit;render();toast(task.solution.feasible?'Complete plan generated. Local validation passed.':'Plan generated with findings to review.')}catch(e){state.solving=false;render();toast(e.message)}};setTimeout(poll,800)}catch(e){state.solving=false;render();toast(e.message)}}
-async function replan(delay,sharing){const result=await api('/api/night',{delay_minutes:delay,use_sharing:sharing});Object.assign(state.data,result);state.data.approval=null;state.delay=delay;state.sharing=sharing;closeModal();render();toast('Night recalculated. Review the new revision before approval.')}
-async function handleAction(action){try{
- if(action==='close')return closeModal();
- if(action==='intake')return intake();
- if(action==='intake-form'){modal('Start with the essentials.',`<p class="modal-lead">Structure a request for Reader review. Readiness evidence must still be checked before the work enters a plan.</p><div class="modal-tabs"><button class="btn small" data-action="intake">Paste an email</button><button class="btn small primary" data-action="intake-form">Use a simple form</button></div><div class="field"><label for="form-title">Work description</label><input id="form-title" value="Signal cable replacement"></div><div class="detail-grid"><div class="field"><label for="form-location">Workface ID</label><input id="form-location" value="SEC:ALP:S02_S03:EB"></div><div class="field"><label for="form-duration">Estimated work (minutes)</label><input id="form-duration" type="number" min="1" max="600" value="120"></div><div class="field"><label for="form-crew">Crew size</label><input id="form-crew" type="number" min="1" max="20" value="4"></div><div class="field"><label for="form-competency">Required competency</label><input id="form-competency" value="signalling"></div><div class="field"><label for="form-plant">Plant required</label><input id="form-plant" value="trolley"></div><div class="field"><label for="form-rollback">Rollback reserve (minutes)</label><input id="form-rollback" type="number" min="1" max="180" value="45"></div></div><label class="switch-label" for="form-isolation">Traction isolation required<input id="form-isolation" type="checkbox" checked></label>`,btn('Cancel','close')+btn('Review structured draft','form-review','primary','arrow'));return}
- if(action==='form-review'){const title=$('#form-title').value.trim(),location=$('#form-location').value.trim(),duration=Number($('#form-duration').value),crew=Number($('#form-crew').value),rollback=Number($('#form-rollback').value),competency=$('#form-competency').value,plant=$('#form-plant').value,isolation=$('#form-isolation').checked;if(!title||!location||duration<=0||crew<=0||rollback<=0)throw new Error('Complete the description, workface and positive duration fields.');const draft=`${title} at ${location}. Estimate ${duration} minutes, crew of ${crew}. Competency: ${competency}; Plant: ${plant||'none'}. ${isolation?'Isolation required.':'No isolation required.'} Rollback ${rollback} minutes.`;intake();$('#request-text').value=draft;return await handleAction('extract')}
- if(action==='delay')return delayModal();
- if(action==='approve')return approvalModal();
- if(action==='go-intelligence'){closeModal();state.page='intelligence';render();queue();return}
- if(action==='trace')return modal('The negotiation, step by step.',agents(state.data.night,true),btn('Back to plan','close'),true);
- if(action==='sharing')return await replan(state.delay,!state.sharing);
- if(action==='replan'){const button=$('[data-action="replan"]');button.disabled=true;button.textContent='Replanning…';return await replan(Number($('#delay-range').value),$('#sharing-check').checked)}
- if(action==='confirm-approve'){const result=await api('/api/approve',{reason:$('#approval-reason').value,revision:state.data.revision});Object.assign(state.data,result);closeModal();render();toast('Approval recorded. Team briefs are ready to download.');return}
- if(action==='extract'){const button=$('[data-action="extract"]');button.disabled=true;button.textContent='Reading…';try{const result=await api('/api/intake',{text:$('#request-text').value});$('#extraction-result').innerHTML=`<div class="extraction">${Object.entries(result.fields||{}).filter(([k])=>!['raw_text'].includes(k)).map(([key,value])=>`<div class="detail-item"><label>${esc(key.replaceAll('_',' '))}</label><strong>${esc(Array.isArray(value)?value.join(', '):value===null?'Not provided':typeof value==='boolean'?(value?'Yes':'No'):typeof value==='object'?JSON.stringify(value):value)}</strong></div>`).join('')}</div>${result.question?`<div class="callout amber"><strong>Reader has one question</strong><br>${esc(result.question)}</div>`:'<div class="callout">Structured draft extracted. Verify parts, competency and plant before submitting to the solver.</div>'}`;state.data.audit=(await api('/api/bootstrap')).audit}finally{button.disabled=false;button.innerHTML=icon('sparkle')+'Extract request'}return}
- if(action==='solve')return solve();
- if(action==='clock-info'){const n=state.data.night;const j=n.jobs.filter(isScheduled).sort((a,b)=>a.latest_commit_minute-b.latest_commit_minute)[0];return modal('The point of no return.',j?`<p class="modal-lead">${esc(j.title)} has the earliest commitment deadline in the current plan.</p><div class="detail-grid"><div class="detail-item"><label>Latest safe start of preparation</label><strong>${clock(j.latest_commit_minute-j.setup)}</strong></div><div class="detail-item"><label>Latest safe start of work</label><strong>${j.latest_commit}</strong></div><div class="detail-item"><label>Begin rollback no later than</label><strong>${clock(n.window.end_minute-j.rollback)}</strong></div><div class="detail-item"><label>First train</label><strong>${n.window.end}</strong></div></div><div class="callout">Reserve ${j.p90} minutes of p90 work and ${j.rollback} minutes of rollback. Setup needs a further ${j.setup} minutes before tools can start.</div><p class="inline-help">P90 is an estimate, not an absolute guarantee. Operational supervision and stop-work procedures remain essential.</p>`:'<p>No scheduled work in this revision.</p>',btn('Back to plan','close'));}
- if(action==='upload'){if(state.solving)throw new Error('Let the current solve finish before replacing the instance.');modal('Run your own challenge instance.',`<p class="modal-lead">Choose all eight numbered CSV files from the instance’s data folder. The new instance replaces the programme dataset and clears previous programme results.</p><div class="field"><label for="instance-files">Eight PS1 instance CSV files</label><input id="instance-files" type="file" accept=".csv" multiple></div><div class="callout">Expected: 01_LINES, 02_STATIONS, 03_SECTORS, 04_LOCATION_SUPPLY, 05_BUFFER_LOCATION, 06_PARAMETERS, 07_PROJECT_DETAILS and 08_ACTIVITY_DETAILS.</div><p class="inline-help">Up to 8 MB combined. Night-demo assumptions remain separate from the uploaded programme.</p>`,btn('Cancel','close')+btn('Load instance','confirm-upload','primary','upload'));return}
- if(action==='confirm-upload'){const files=[...$('#instance-files').files];if(files.length!==8)throw new Error('Select all eight instance CSV files.');const contents={};for(const file of files)contents[file.name]=await file.text();const result=await api('/api/upload',{files:contents});Object.assign(state.data,result);state.solutions={};closeModal();render();toast('Instance loaded. Choose a scenario and generate a plan.');return}
- if(action==='conflicts'){const catalog=state.solutions[state.scenario]?.conflict_catalog||[];return modal('Why some work cannot share.',`<p class="modal-lead">Typed conflicts are derived from the same physical rules used to build the solver constraints. These explain incompatible pairs; they are not unsatisfiable-core proofs.</p>${catalog.slice(0,14).map(c=>`<div class="check">${icon('shield')}<div><strong>${esc(c.type?.replaceAll('_',' '))} · ${esc((c.activities||[]).join(' / '))}</strong><small>${esc(c.detail||c.reason||'These jobs need separate possession slots.')}</small>${c.suggestion?`<small>${esc(c.suggestion)}</small>`:''}</div></div>`).join('')||'<div class="callout">Recalculate this scenario to generate the latest conflict catalogue.</div>'}<p class="inline-help">Showing ${Math.min(14,catalog.length)} of ${catalog.length} incompatible pairs.</p>`,btn('Close','close'),true);}
- if(action==='model'){const model=state.data.night.model;return modal('A working model. Transparent inputs.',`<p class="modal-lead">Two gradient-boosted regressors use quantile loss to estimate the 50th and 90th percentiles of work duration. Training records are generated with a fixed seed and are not operational railway records.</p><div class="detail-grid">${Object.entries(model||{}).map(([k,v])=>`<div class="detail-item"><label>${esc(k.replaceAll('_',' '))}</label><strong>${esc(typeof v==='object'?JSON.stringify(v):v)}</strong></div>`).join('')}</div><p class="inline-help">Synthetic holdout results demonstrate the pipeline only. Operational calibration requires actual maintenance history and independent safety assurance.</p>`,btn('Close','close'),true)}
- if(action==='about')return modal('TOOLTIME · the engineering hour.',`<p class="modal-lead">A hackathon prototype for PS1 Railway Track Access Optimisation. Built around useful work, safe handback and human authority.</p><div class="check">${icon('calendar')}<div><strong>Real challenge data & solver</strong><small>54 activities · 14 contracts · 192 access units. Scenarios A, B and C with exact CSV exports.</small></div></div><div class="check">${icon('sparkle')}<div><strong>Working prediction pipeline</strong><small>Gradient boosting trained on disclosed synthetic history. The source pack contains no measured durations.</small></div></div><div class="check">${icon('user')}<div><strong>Transparent agent simulation</strong><small>Reader, Checker, Requesters and Planner use local deterministic policies. Gemini is not connected.</small></div></div><div class="check">${icon('shield')}<div><strong>Human approval</strong><small>Revisioned review, local audit history and downloadable team briefs. No external messages sent.</small></div></div><div class="callout amber">Local validation is implemented; the official judge validator was not supplied. This prototype is not an operational dispatch authority.</div>`,btn('Back to workspace','close'));
- }catch(error){toast(error.message);const b=$('[data-action="replan"]');if(b){b.disabled=false;b.innerHTML=icon('replay')+'Replan this night'}}}
-document.addEventListener('click',event=>{const action=event.target.closest('[data-action]');if(action){handleAction(action.dataset.action);return}const nav=event.target.closest('[data-page]');if(nav){state.page=nav.dataset.page;render();queue();window.scrollTo(0,0);return}const job=event.target.closest('[data-job]');if(job){showJob(job.dataset.job);return}const scenario=event.target.closest('[data-scenario]');if(scenario){state.scenario=scenario.dataset.scenario;render();return}if(event.target.classList.contains('modal-backdrop'))closeModal()});
-document.addEventListener('input',event=>{if(event.target.id==='delay-range')$('#delay-value').textContent=`${event.target.value} minutes`;if(event.target.id==='arrival'||event.target.id==='capacity')queue();if(event.target.id==='request-search'){const pos=event.target.selectionStart;state.search=event.target.value;render();$('#request-search').focus();$('#request-search').setSelectionRange(pos,pos)}});
-document.addEventListener('change',event=>{if(event.target.id==='request-filter'){state.filter=event.target.value;render()}});
-document.addEventListener('keydown',event=>{if(event.key==='Escape')closeModal();if(event.key==='Tab'&&$('.modal')){const nodes=[...$('.modal').querySelectorAll('button,input,select,textarea,a[href]')].filter(x=>!x.disabled);const first=nodes[0],last=nodes[nodes.length-1];if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus()}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus()}}});
-async function boot(){try{state.data=await api('/api/bootstrap');state.solutions=state.data.solutions||{};state.delay=state.data.night.delay_minutes||0;state.sharing=state.data.night.use_sharing!==false;render()}catch(e){$('#app').innerHTML=`<div class="boot"><span class="brand-mark">t.</span><h2>The workspace couldn’t load.</h2><p>${esc(e.message)}</p><button class="btn primary" onclick="location.reload()">Try again</button></div>`}}
-boot();
+function closeDrawer() { $('#drawer').hidden = true; $('#scrim').hidden = true; }
+
+function modal(title, bodyHtml, actionLabel, onConfirm) {
+  $('#modal-title').textContent = title;
+  $('#modal-body').innerHTML = bodyHtml;
+  $('#modal-foot').innerHTML =
+    `<button class="btn secondary" value="cancel">Cancel</button>
+     <button class="btn" id="modal-go" value="go">${esc(actionLabel)}</button>`;
+  const dlg = $('#modal');
+  dlg.showModal();
+  $('#modal-go').onclick = async ev => {
+    ev.preventDefault();
+    try { await onConfirm(); dlg.close(); } catch (err) { toast(err.message, true); }
+  };
+}
+
+/* ────────────────────────────────────────────────────────────── step 1 */
+
+function viewInstance() {
+  const info = state.snap?.instance;
+  const pre = state.precheck;
+  return `
+    <div class="page-head">
+      <h1>Load the demand book</h1>
+      <p>Eight CSV files describe the network, the contracts and the work to be done.
+         Drop them in, or start from the instance packaged with this tool.</p>
+    </div>
+
+    <div class="drop" id="drop">
+      <h3>Drop the eight CSV files here</h3>
+      <p>01_LINES · 02_STATIONS · 03_SECTORS · 04_LOCATION_SUPPLY<br>
+         05_BUFFER_LOCATION · 06_PARAMETERS · 07_PROJECT_DETAILS · 08_ACTIVITY_DETAILS</p>
+      <div class="row" style="justify-content:center">
+        <button class="btn" id="btn-pick">Choose files</button>
+        <button class="btn secondary" id="btn-reset">Use the packaged instance</button>
+      </div>
+      <input type="file" id="files" multiple accept=".csv">
+    </div>
+
+    ${state.uploadError ? `<div class="note bad" style="margin-top:14px">
+      <b>Those files were not loaded</b>
+      <p>${esc(state.uploadError)}</p>
+      <p style="margin-top:6px">The previous instance is still in place, so anything you
+         plan now uses the old data. Fix the file and upload again.</p>
+    </div>` : ''}
+
+    ${info ? `
+      <div class="card" style="margin-top:18px">
+        <h3>${esc(state.snap.instance_name)}</h3>
+        <p>This is what the solver will work with.</p>
+        <div class="grid stats">
+          <div class="stat"><b>${info.activities}</b><span>activities</span></div>
+          <div class="stat"><b>${info.contracts}</b><span>contracts</span></div>
+          <div class="stat"><b>${info.access_nights}</b><span>access nights</span></div>
+          <div class="stat"><b>${info.locations}</b><span>locations</span></div>
+          <div class="stat"><b>${info.horizon_weeks}</b><span>weeks</span></div>
+          <div class="stat"><b>${info.lines.length}</b><span>lines</span></div>
+        </div>
+        <p style="margin-top:14px; font-size:13px; color:var(--muted)">
+          Planning starts ${esc(info.horizon_start)}.
+          ${info.live_contracts.length
+            ? `Live traction work on ${esc(info.live_contracts.join(', '))} —
+               those weeks close both tracks and cross to the other line at the interchange.`
+            : 'No live traction work in this instance.'}
+        </p>
+      </div>
+
+      <div class="card">
+        <h3>Is it deliverable?</h3>
+        <p>A quick arithmetic check before any solving — it finds what no schedule could fix.</p>
+        ${pre ? `
+          <div class="note ${pre.deliverable ? 'good' : 'bad'}">
+            <b>${pre.deliverable ? 'No blocking problems' : 'Not deliverable as specified'}</b>
+            <p>${esc(pre.summary)}</p>
+          </div>
+          ${pre.blocking.map(f => `<div class="note bad"><b>${esc(f.subject)}</b><p>${esc(f.detail)}</p></div>`).join('')}
+          ${pre.tight.slice(0, 6).map(f => `<div class="note warn"><b>${esc(f.subject)}</b><p>${esc(f.detail)}</p></div>`).join('')}
+          ${pre.tight.length > 6 ? `<p style="font-size:13px;color:var(--muted)">…and ${pre.tight.length - 6} more tight spots.</p>` : ''}
+        ` : `<button class="btn secondary" id="btn-precheck">Run the check</button>`}
+      </div>
+
+      <div class="row"><button class="btn" id="btn-to-plan">Continue to planning →</button></div>
+    ` : ''}`;
+}
+
+/* ────────────────────────────────────────────────────────────── step 2 */
+
+function viewPlan() {
+  const p = plan();
+  return `
+    <div class="page-head">
+      <h1>Choose a policy, then plan</h1>
+      <p>The same work can be scheduled three ways, depending on what you are allowed to bend.
+         Each produces its own submission.</p>
+    </div>
+
+    <div class="scenarios">
+      ${Object.entries(SCENARIOS).map(([key, s]) => {
+        const done = state.snap?.scenarios?.[key];
+        return `<button class="scenario" data-scenario="${key}" aria-pressed="${state.scenario === key}">
+          <span class="tag">Scenario ${key}</span>
+          <h3>${esc(s.name)}</h3>
+          <p>${esc(s.blurb)}</p>
+          <span class="score">
+            <span>${done ? (done.feasible ? 'Planned' : 'Has violations') : 'Not planned yet'}</span>
+            <b>${done?.score ?? '—'}</b>
+          </span>
+        </button>`;
+      }).join('')}
+    </div>
+
+    <div class="card" style="margin-top:18px">
+      <h3>Run the scheduler</h3>
+      <p>${esc(SCENARIOS[state.scenario].scored)} Lower is better — zero is perfect.</p>
+      <div class="grid two">
+        <label class="field">
+          <span>Time to spend searching</span>
+          <input type="number" id="seconds" value="${state.seconds}" min="1" max="120">
+        </label>
+        <label class="check" style="align-self:end; padding-bottom:14px">
+          <input type="checkbox" id="use-agents" ${state.showNegotiation ? 'checked' : ''}>
+          <span>Show the negotiation
+            <em>Contract agents argue over who concedes. Slower, and you can read the transcript afterwards.</em>
+          </span>
+        </label>
+      </div>
+      <button class="btn" id="btn-solve">Plan Scenario ${state.scenario}</button>
+    </div>
+
+    ${p ? verdictBlock(p) : `<div class="card"><p class="empty">No schedule for Scenario ${state.scenario} yet.</p></div>`}
+  `;
+}
+
+function verdictBlock(p) {
+  const s = p.soft_scores || {};
+  const ok = p.feasible;
+  return `
+    <div class="verdict ${ok ? 'pass' : 'fail'}">
+      <div class="headline">
+        <b>${ok ? 'Schedule is valid' : 'Schedule has problems'}</b>
+        <small>${ok
+          ? 'All work placed, every safety rule respected.'
+          : `${(p.hard_violations || []).length} rule breach(es) — see below.`}</small>
+      </div>
+      <div class="metrics">
+        <div><b>${s.objective_score ?? '—'}</b><span>penalty score</span></div>
+        <div><b>${s.overrun_days_total ?? '—'}</b><span>days late</span></div>
+        <div><b>${s.eclo_nights_total ?? 0}</b><span>early closures</span></div>
+        <div><b>${s.excess_access_nights_total ?? 0}</b><span>extra nights</span></div>
+        <div><b>${p.seconds ?? '—'}s</b><span>to plan</span></div>
+      </div>
+    </div>
+    ${p.churn ? `<div class="note info"><b>What changed</b><p>${esc(p.churn.summary)}</p></div>` : ''}
+    ${p.error ? `<div class="note warn"><b>Note</b><p>${esc(p.error)}</p></div>` : ''}
+    ${!p.feasible ? `<div class="card">
+        <h3>Rule breaches</h3>
+        ${(p.hard_violations || []).map(v =>
+          `<div class="note bad"><b>${esc(v.rule)}</b><p>${esc(v.detail)}</p></div>`).join('')}
+      </div>` : ''}
+    <div class="row">
+      <button class="btn" id="btn-to-explore">Explore this schedule →</button>
+      ${p.negotiation ? `<button class="btn secondary" id="btn-negotiation">Read the negotiation</button>` : ''}
+    </div>`;
+}
+
+/* ────────────────────────────────────────────────────────────── step 3 */
+
+function viewExplore() {
+  const p = plan();
+  if (!p) return `<div class="page-head"><h1>Explore</h1></div>
+    <div class="card"><p class="empty">Plan a scenario first.</p></div>`;
+  const sc = state.schedule;
+  return `
+    <div class="page-head">
+      <h1>The schedule, and why</h1>
+      <p>Every bar is one activity across the planning horizon.
+         Click any activity to see why it sits where it does.</p>
+    </div>
+
+    ${verdictBlock(p)}
+    ${dashboardBlock()}
+    ${calendarBlock()}
+
+    <div class="card">
+      <h3>Something changed on the ground?</h3>
+      <p>Describe it in plain English. The plan is re-solved and you are shown exactly what moved.</p>
+      <label class="field">
+        <span>For example: “H01 to H02 eastbound on Beta is down to one slot for weeks 12 to 14”</span>
+        <textarea id="disrupt" placeholder="Type what happened…"></textarea>
+      </label>
+      <div class="row">
+        <button class="btn secondary" id="btn-disrupt">Apply and re-plan</button>
+        ${state.snap.reductions.length
+          ? `<button class="btn quiet" id="btn-clear-disrupt">Clear ${state.snap.reductions.length} change(s)</button>`
+          : ''}
+        <button class="btn quiet" id="btn-override">Add an override…</button>
+      </div>
+      ${state.snap.locks.length ? `<div style="margin-top:14px">
+        ${state.snap.locks.map(l => `<div class="note warn">
+          <b>${esc(l.activity)} — ${esc(l.lever === 'pin' ? 'must run in week ' + l.week
+            : l.lever === 'forbid' ? 'must not run in week ' + l.week : 'no early closures')}</b>
+          <p>${esc(l.reason)} · <span class="linkish" data-unlock="${esc(l.id)}">remove</span></p>
+        </div>`).join('')}</div>` : ''}
+    </div>
+
+    ${sc ? `
+      <div class="legend">
+        <span><i style="background:var(--green)"></i>working night</span>
+        <span><i style="background:var(--orange)"></i>early closure</span>
+        <span><i style="background:var(--red)"></i>past the contract target</span>
+        <span><i style="background:#eef1ea"></i>idle</span>
+      </div>
+      <div class="gantt">
+        <table>
+          <thead><tr>
+            <th style="width:92px">Activity</th><th style="width:118px">Contract</th>
+            <th class="num" style="width:62px">Nights</th>
+            <th>Week 1 → ${sc.horizon_weeks}</th>
+          </tr></thead>
+          <tbody>${sc.activities.map(a => ganttRow(a, sc.horizon_weeks)).join('')}</tbody>
+        </table>
+      </div>
+
+      ${sc.overruns.length ? `<div class="card" style="margin-top:16px">
+        <h3>Finishing late</h3>
+        <p>Ranked by what the delay costs. Contract tier sets the price.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Activity</th><th>Contract</th><th class="num">Weeks late</th>
+            <th class="num">Penalty</th><th>Why it matters</th></tr></thead>
+          <tbody>${sc.overruns.map(o => `<tr>
+            <td><span class="linkish" data-explain="${esc(o.activity_id)}">${esc(o.activity_id)}</span></td>
+            <td>${esc(o.contract)}</td><td class="num">${o.weeks}</td>
+            <td class="num">${o.cost}</td>
+            <td style="color:var(--muted)">${esc(o.detail)}</td></tr>`).join('')}</tbody>
+        </table></div>
+      </div>` : ''}
+
+      ${sc.hotspots.length ? `<div class="card">
+        <h3>Where the network is tightest</h3>
+        <p>These locations ran out of possessions. Co-sharing is what makes them work at all —
+           one slot can hold up to four compatible activities.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Location</th><th class="num">Slots per week</th><th class="num">Weeks at capacity</th></tr></thead>
+          <tbody>${sc.hotspots.map(h => `<tr><td>${esc(h.location_id)}</td>
+            <td class="num">${h.capacity}</td><td class="num">${h.weeks_at_capacity}</td></tr>`).join('')}</tbody>
+        </table></div>
+      </div>` : ''}
+    ` : '<div class="card"><p class="empty">Loading the schedule…</p></div>'}`;
+}
+
+function ganttRow(a, horizon) {
+  const on = new Set(a.weeks), eclo = new Set(a.eclo_weeks);
+  let cells = '';
+  for (let w = 1; w <= horizon; w++) {
+    let cls = 'wk';
+    if (eclo.has(w)) cls += ' eclo';
+    else if (on.has(w)) cls += (w > a.deadline_week ? ' late' : ' on');
+    if (w % 5 === 0) cls += ' mark';
+    cells += `<div class="${cls}" title="Week ${w}"></div>`;
+  }
+  const tier = a.contract_priority;
+  return `<tr>
+    <td><span class="linkish" data-explain="${esc(a.activity_id)}">${esc(a.activity_id)}</span></td>
+    <td>${esc(a.contract)} <span class="pill ${tier === 1 ? 'p1' : tier === 2 ? 'p2' : ''}">P${tier}</span>
+      ${a.nature === 'Live' ? '<span class="pill live">Live</span>' : ''}</td>
+    <td class="num">${a.total_accesses}</td>
+    <td class="bars"><div class="track">${cells}</div></td></tr>`;
+}
+
+function dashboardBlock() {
+  const d = state.dashboard;
+  if (!d) return '';
+  return `<div class="dash">${d.sections.map(sec => `
+    <div class="dash-card ${sec.status}">
+      <h4><span class="led ${sec.status}"></span>${esc(sec.title)}</h4>
+      ${sec.rows.map(r => `<div class="dash-row ${r.status}">
+        <span class="txt">${esc(r.label)}<em>${esc(r.note)}</em></span>
+        <span class="val">${esc(r.value)}</span>
+      </div>`).join('')}
+    </div>`).join('')}</div>
+  <div class="legend">
+    <span><i style="background:var(--green)"></i>valid, with room to spare</span>
+    <span><i style="background:var(--orange)"></i>valid, but at capacity or running late</span>
+    <span><i style="background:var(--red)"></i>a rule is broken</span>
+  </div>`;
+}
+
+function calendarBlock() {
+  const cal = state.calendar;
+  if (!cal) return '<div class="card"><p class="empty">Loading the calendar…</p></div>';
+  const month = w => new Date(w.starts + 'T00:00:00')
+    .toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  return `<div class="card">
+    <h3>The planning horizon, week by week</h3>
+    <p>Each cell is one week. Click it to see exactly who is working, what fills up,
+       and where the network is under strain.</p>
+    <div class="cal">${cal.weeks.map(w => `
+      <button data-week="${w.week}" class="${w.status}"
+              aria-pressed="${state.selectedWeek === w.week}">
+        <span class="wknum">Week ${w.week}</span>
+        <span class="wkdate">${esc(month(w))}</span>
+        <span class="wkcount">${w.activities ? `<b>${w.activities}</b> activit${w.activities === 1 ? 'y' : 'ies'}` : 'idle'}</span>
+        <span class="wkflags">
+          ${w.live.length ? '<span class="flag live">live</span>' : ''}
+          ${w.locations_over ? `<span class="flag late">over</span>`
+            : w.locations_full ? `<span class="flag full">full</span>` : ''}
+          ${w.late ? '<span class="flag late">late</span>' : ''}
+          ${w.eclo ? '<span class="flag eclo">eclo</span>' : ''}
+        </span>
+      </button>`).join('')}</div>
+  </div>`;
+}
+
+function weekDetail(w) {
+  const chip = s => `<span class="state ${s.status}">${esc(s.label)}</span>`;
+  return `
+    <p style="color:var(--muted); font-size:13.5px">
+      ${esc(w.starts)} to ${esc(w.ends)} · ${w.working.length} activit${w.working.length === 1 ? 'y' : 'ies'} working</p>
+
+    ${w.live_closures.length ? `<div class="note warn" style="margin-top:14px">
+      <b>Live traction work this week</b>
+      ${w.live_closures.map(c => `<p>${esc(c.activity_id)} (${esc(c.contract)}) cuts power —
+        ${c.closes.length} further locations are closed all week, including the other line
+        at the interchange.</p>`).join('')}</div>` : ''}
+
+    <div class="wk-detail">
+      <h4>Working this week</h4>
+      ${w.working.length ? w.working.map(a => `<div class="wk-item">
+        <span class="who">
+          <span><span class="linkish" data-explain="${esc(a.activity_id)}">${esc(a.activity_id)}</span>
+            · ${esc(a.contract)}
+            <span class="pill ${a.contract_priority === 1 ? 'p1' : a.contract_priority === 2 ? 'p2' : ''}">P${a.contract_priority}</span>
+            ${a.nature === 'Live' ? '<span class="pill live">Live</span>' : ''}
+            ${a.eclo ? '<span class="pill">early closure</span>' : ''}</span>
+          <span class="meta">${esc(a.from)} → ${esc(a.to)} · ${a.locations.length} locations
+            · night ${esc(a.access_night)} of the contract's allowance</span>
+        </span>
+        <span class="state ${a.late ? 'red' : 'green'}">${a.late ? 'past target' : 'on time'}</span>
+      </div>`).join('') : '<p class="empty">Nothing scheduled this week.</p>'}
+
+      ${w.contract_access.length ? `<h4>Contract access used</h4>
+        ${w.contract_access.map(c => `<div class="wk-item">
+          <span class="who"><span>${esc(c.contract)} · ${esc(c.activity_type)}</span>
+            <span class="meta">${c.used}/${c.granted} nights used</span></span>
+          ${chip(c)}</div>`).join('')}` : ''}
+
+      ${w.location_supply.length ? `<h4>Location supply</h4>
+        ${w.location_supply.slice(0, 18).map(l => `<div class="wk-item">
+          <span class="who"><span>${esc(l.location_id)}</span>
+            <span class="meta">${l.used}/${l.capacity} slots · ${esc(l.activities.join(', '))}</span></span>
+          ${chip(l)}</div>`).join('')}
+        ${w.location_supply.length > 18
+          ? `<p class="meta" style="padding-top:8px">…and ${w.location_supply.length - 18} more locations.</p>` : ''}` : ''}
+    </div>`;
+}
+
+/* ────────────────────────────────────────────────────────────── step 4 */
+
+function viewExport() {
+  const done = Object.keys(SCENARIOS).filter(ready);
+  return `
+    <div class="page-head">
+      <h1>Export the submission</h1>
+      <p>Three files per scenario: the access nights, the locations occupied, and the
+         completion summary.</p>
+    </div>
+
+    <div class="scenarios">
+      ${Object.entries(SCENARIOS).map(([key, s]) => {
+        const p = state.snap?.scenarios?.[key];
+        const ok = p?.feasible;
+        return `<div class="scenario" aria-pressed="false" style="cursor:default">
+          <span class="tag">Scenario ${key}</span>
+          <h3>${esc(s.name)}</h3>
+          <p>${ok ? 'Valid — no rule breaches.'
+                  : p ? 'Has rule breaches; fix before submitting.'
+                      : 'Not planned yet.'}</p>
+          <span class="score"><span>penalty score</span><b>${p?.score ?? '—'}</b></span>
+          <button class="btn ${ok ? '' : 'secondary'}" data-download="${key}" ${ok ? '' : 'disabled'}
+            style="margin-top:10px">Download ${key}</button>
+        </div>`;
+      }).join('')}
+    </div>
+
+    <div class="card" style="margin-top:18px">
+      <h3>Everything at once</h3>
+      <p>All valid scenarios, their validation reports, and the decision log, in one zip.</p>
+      <div class="row">
+        <button class="btn" id="btn-download-all" ${done.length ? '' : 'disabled'}>
+          Download full submission${done.length ? ` (${done.length} scenario${done.length > 1 ? 's' : ''})` : ''}
+        </button>
+        <button class="btn quiet" id="btn-audit">View the decision log</button>
+      </div>
+    </div>
+
+    ${done.length < 3 ? `<div class="note warn">
+      <b>${3 - done.length} scenario(s) still to plan</b>
+      <p>A complete submission covers A, B and C. Go back to step 2 to plan the rest.</p>
+    </div>` : `<div class="note good"><b>All three scenarios are ready</b>
+      <p>Download the full submission and you are done.</p></div>`}`;
+}
+
+/* ────────────────────────────────────────────────────────────── render */
+
+const VIEWS = { instance: viewInstance, plan: viewPlan, explore: viewExplore, export: viewExport };
+const TITLES = { instance: 'Instance', plan: 'Plan', explore: 'Explore', export: 'Export' };
+
+function renderChrome() {
+  const s = state.snap;
+  const info = s?.instance;
+  $('#chip-instance').textContent = info
+    ? `${info.activities} activities · ${info.contracts} contracts · ${info.horizon_weeks} weeks`
+    : 'No instance loaded';
+  $('#crumb-step').textContent = TITLES[state.step];
+  $('#nav-instance').textContent = info ? `${info.activities} activities` : 'not loaded';
+  const planned = Object.keys(SCENARIOS).filter(k => s?.scenarios?.[k]);
+  $('#nav-plan').textContent = planned.length ? `${planned.length} of 3 planned` : 'no schedule yet';
+  $('#nav-explore').textContent = plan() ? 'ready' : 'run a scenario first';
+  const valid = Object.keys(SCENARIOS).filter(ready);
+  $('#nav-export').textContent = valid.length ? `${valid.length} ready` : 'nothing ready';
+
+  [...$('#steps').children].forEach(b => {
+    b.classList.toggle('active', b.dataset.step === state.step);
+    const done = { instance: !!info, plan: planned.length > 0,
+                   explore: !!plan(), export: valid.length === 3 }[b.dataset.step];
+    b.classList.toggle('done', !!done && b.dataset.step !== state.step);
+  });
+
+  const live = s?.gemini;
+  $('#engine-dot').classList.toggle('live', !!live);
+  $('#engine-name').textContent = live ? 'Solver + language model' : 'Constraint solver';
+  $('#engine-detail').textContent = live ? 'CP-SAT · Gemini available' : 'OR-Tools CP-SAT';
+}
+
+function render() {
+  renderChrome();
+  $('#view').innerHTML = (VIEWS[state.step] || viewInstance)();
+}
+
+async function refresh() { state.snap = await api('state'); }
+
+async function loadSchedule() {
+  const s = state.scenario;
+  try {
+    const [schedule, dashboard, calendar] = await Promise.all([
+      api(`schedule?scenario=${s}`), api(`dashboard?scenario=${s}`), api(`calendar?scenario=${s}`)
+    ]);
+    state.schedule = schedule; state.dashboard = dashboard; state.calendar = calendar;
+  } catch {
+    state.schedule = state.dashboard = state.calendar = null;
+  }
+  state.selectedWeek = null;
+}
+
+async function openWeek(week) {
+  try {
+    const w = await api(`week?scenario=${state.scenario}&week=${week}`);
+    state.selectedWeek = week;
+    render();
+    openDrawer(`Week ${week}`, weekDetail(w));
+  } catch (err) { toast(err.message, true); }
+}
+
+function goto(step) { state.step = step; window.scrollTo(0, 0); render(); }
+
+/* ────────────────────────────────────────────────────────────── actions */
+
+async function solve() {
+  if (state.busy) return;
+  state.busy = true;
+  const btn = $('#btn-solve');
+  state.showNegotiation = !!$('#use-agents')?.checked;
+  state.seconds = Number($('#seconds')?.value) || 20;
+  const agents = state.showNegotiation;
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner"></span>${agents ? 'Negotiating…' : 'Planning…'}`;
+  }
+  try {
+    const result = await api('solve',
+      { scenario: state.scenario, seconds: state.seconds, use_agents: agents });
+    (result.refused || []).forEach(r => toast('Override refused: ' + r.why, true));
+    await refresh();
+    await loadSchedule();
+    state.negotiation = null;
+    render();
+    toast(result.feasible
+      ? `Scenario ${state.scenario} planned — penalty score ${result.score}.`
+      : `Scenario ${state.scenario}: ${result.hard_violations.length} rule breach(es).`,
+      !result.feasible);
+  } catch (err) {
+    toast(err.message, true);
+    render();
+  }
+  state.busy = false;
+}
+
+async function explain(activityId) {
+  try {
+    const e = await api(`explain?scenario=${state.scenario}&activity=${encodeURIComponent(activityId)}`);
+    const blockers = (e.blockers || []).filter(b => b.reason !== 'available');
+    openDrawer(`${e.activity_id} — why this week`, `
+      <div class="note good"><b>${esc(e.headline)}</b>
+        <p>Contract ${esc(e.contract)}, priority ${e.contract_priority}.
+           ${e.total_accesses} nights of work. Earliest allowed start is week
+           ${e.planned_start_week}; the contract target is week ${e.deadline_week}.</p></div>
+      <div class="card card-tight">
+        <h4>Scheduled weeks</h4>
+        <p style="color:var(--muted); font-size:13.5px">
+          ${(e.scheduled_weeks || []).map(w => 'week ' + w).join(', ')}</p>
+      </div>
+      ${e.overrun ? `<div class="note bad"><b>Finishes late</b><p>${esc(e.overrun.detail)}</p></div>` : ''}
+      ${blockers.length ? `<h4 style="margin:20px 0 10px">Why not earlier</h4>
+        ${blockers.map(b => `<div class="note warn"><b>Week ${b.week}</b><p>${esc(b.detail)}</p></div>`).join('')}` : ''}
+      ${(e.gaps || []).length ? `<h4 style="margin:20px 0 10px">Why the gaps</h4>
+        ${e.gaps.map(b => `<div class="note warn"><b>Week ${b.week}</b><p>${esc(b.detail)}</p></div>`).join('')}` : ''}
+      <h4 style="margin:20px 0 10px">Worksite</h4>
+      <p style="color:var(--muted); font-size:13px; line-height:1.7">
+        ${(e.locations || []).map(esc).join('<br>')}</p>`);
+  } catch (err) { toast(err.message, true); }
+}
+
+async function showNegotiation() {
+  try {
+    const n = await api(`negotiation?scenario=${state.scenario}`);
+    if (!n.ran) return openDrawer('The negotiation', `<div class="note info">
+      <b>No negotiation on this plan</b><p>${esc(n.why)}</p></div>`);
+    openDrawer('How the agents argued', `
+      <p style="color:var(--muted); font-size:13.5px; margin-bottom:16px">
+        One agent per contract, each holding its own priority and deadline. The planner asks
+        whoever is hurting what they can give up, tests one bundle of concessions, and keeps it
+        only if an independent validator scores it better. Proposals came from the
+        <strong>${esc(n.negotiator)}</strong>.</p>
+      ${n.ledger.map(r => `<div class="note ${r.kept ? 'good' : ''}">
+        <b>Round ${r.round} · ${esc(r.bundle)} — ${r.kept ? 'accepted' : 'discarded'}</b>
+        <p>${esc(r.why)}</p>
+        ${(r.concessions || []).length ? `<p style="margin-top:6px">${r.concessions.map(c =>
+          `<span class="pill">${esc(c.lever)} · costs ${c.est_cost}</span>`).join(' ')}</p>
+          ${r.concessions.filter(c => c.rationale).map(c =>
+            `<p style="margin-top:5px; font-size:13px">“${esc(c.rationale)}”</p>`).join('')}` : ''}
+      </div>`).join('')}
+      <h4 style="margin:22px 0 10px">Messages exchanged</h4>
+      ${n.messages.map(m => `<div class="note"><b>${esc(m.sender)} → ${esc(m.recipient)}</b>
+        <p>${esc(m.summary)}</p></div>`).join('')}`);
+  } catch (err) { toast(err.message, true); }
+}
+
+function overrideDialog() {
+  modal('Add an override', `
+    <p style="color:var(--muted); font-size:13.5px; margin-bottom:14px">
+      An override is a hard rule, not an edit. The whole plan is re-solved around it, so it
+      stays valid. If it would break a safety rule it is refused and you are told which one.</p>
+    <label class="field"><span>What should happen</span>
+      <select id="ov-kind">
+        <option value="pin">This activity must run in a particular week</option>
+        <option value="forbid">This activity must not run in a particular week</option>
+        <option value="no_eclo">This activity may not use an early closure</option>
+      </select></label>
+    <label class="field"><span>Activity</span>
+      <input type="text" id="ov-act" placeholder="A040"></label>
+    <label class="field"><span>Week</span>
+      <input type="number" id="ov-week" min="1" placeholder="14"></label>
+    <label class="field"><span>Reason — this goes in the decision log</span>
+      <input type="text" id="ov-why" placeholder="Contractor crew only available that week"></label>`,
+    'Add override', async () => {
+      await api('lock', {
+        kind: $('#ov-kind').value,
+        activity: $('#ov-act').value.trim().toUpperCase(),
+        week: Number($('#ov-week').value) || null,
+        reason: $('#ov-why').value
+      });
+      await refresh(); render();
+      toast('Override added. Re-plan to apply it.');
+    });
+}
+
+async function showAudit() {
+  const log = state.snap?.audit || [];
+  openDrawer('Decision log', log.length
+    ? log.slice().reverse().map(e => `<div class="note">
+        <b>${esc(e.action.replace(/_/g, ' '))}</b>
+        <p>${esc(e.detail)}<br><span style="font-size:12px">${esc(e.at)}</span></p></div>`).join('')
+    : '<p class="empty">Nothing recorded yet.</p>');
+}
+
+/* ────────────────────────────────────────────────────────────── wiring */
+
+$('#steps').addEventListener('click', async ev => {
+  const b = ev.target.closest('button[data-step]');
+  if (!b) return;
+  goto(b.dataset.step);
+  // Explore renders from the schedule, which is fetched separately.
+  if (b.dataset.step === 'explore' && !state.schedule && plan()) {
+    await loadSchedule();
+    render();
+  }
+});
+
+$('#drawer-body').addEventListener('click', ev => {
+  const link = ev.target.closest('[data-explain]');
+  if (link) explain(link.dataset.explain);
+});
+$('#drawer-close').addEventListener('click', closeDrawer);
+$('#scrim').addEventListener('click', closeDrawer);
+document.addEventListener('keydown', ev => { if (ev.key === 'Escape') closeDrawer(); });
+
+$('#btn-help').addEventListener('click', () => openDrawer('About this tool', `
+  <p style="font-size:14px; line-height:1.6">Track access only exists between the last train and
+  the first. This tool decides which contracted work gets which night, on which stretch of track,
+  for a two-line network over a full planning horizon.</p>
+  <h4 style="margin:20px 0 8px">How it decides</h4>
+  <p style="color:var(--muted); font-size:13.5px; line-height:1.6">A constraint solver places every
+  activity so that no safety rule is broken — exclusion zones, live traction closures, how many
+  possessions a location can hold, how many nights a contract is granted. Among the valid
+  schedules it picks the one with the lowest penalty, where delay to a high-priority contract
+  costs a hundred times more than delay to a low-priority one.</p>
+  <h4 style="margin:20px 0 8px">How it is checked</h4>
+  <p style="color:var(--muted); font-size:13.5px; line-height:1.6">The schedule is written out as
+  the three submission files, then read back and re-checked by a separate validator that shares no
+  code with the solver. What you see is the second opinion, not the solver marking its own work.</p>`));
+
+$('#view').addEventListener('click', async ev => {
+  const t = ev.target;
+  const scenario = t.closest('[data-scenario]');
+  if (scenario) {
+    state.scenario = scenario.dataset.scenario;
+    state.schedule = null;
+    render();
+    await loadSchedule();
+    render();
+    return;
+  }
+  const explainEl = t.closest('[data-explain]');
+  if (explainEl) return explain(explainEl.dataset.explain);
+
+  const weekEl = t.closest('[data-week]');
+  if (weekEl) return openWeek(Number(weekEl.dataset.week));
+
+  const unlock = t.closest('[data-unlock]');
+  if (unlock) {
+    await api('unlock', { id: unlock.dataset.unlock });
+    await refresh(); render(); toast('Override removed.');
+    return;
+  }
+  const dl = t.closest('[data-download]');
+  if (dl) { location.href = `/api/export?scenario=${dl.dataset.download}`; return; }
+
+  switch (t.id) {
+    case 'btn-pick': $('#files').click(); break;
+    case 'btn-reset':
+      await api('reset', {});
+      state.schedule = state.precheck = null;
+      await refresh(); render(); toast('Packaged instance loaded.');
+      break;
+    case 'btn-precheck':
+      state.precheck = await api(`precheck?scenario=${state.scenario}`);
+      render(); toast(state.precheck.summary);
+      break;
+    case 'btn-to-plan': goto('plan'); break;
+    case 'btn-solve': solve(); break;
+    case 'btn-to-explore':
+      goto('explore');
+      if (!state.schedule) { await loadSchedule(); render(); }
+      break;
+    case 'btn-negotiation': showNegotiation(); break;
+    case 'btn-override': overrideDialog(); break;
+    case 'btn-audit': showAudit(); break;
+    case 'btn-download-all': location.href = '/api/export_all'; break;
+    case 'btn-clear-disrupt':
+      await api('clear_disruptions', {});
+      await refresh(); render(); toast('Capacity changes cleared.');
+      break;
+    case 'btn-disrupt': {
+      const text = $('#disrupt').value.trim();
+      if (!text) return toast('Describe what happened first.', true);
+      const out = await api('disrupt', { text });
+      if (!out.understood) return toast(out.problems[0], true);
+      await refresh();
+      toast(out.echo + ' Re-planning…');
+      await solve();
+      break;
+    }
+  }
+});
+
+/* file handling — click and drag both land here */
+document.addEventListener('change', async ev => {
+  if (ev.target.id !== 'files' || !ev.target.files.length) return;
+  await upload([...ev.target.files]);
+});
+
+async function upload(fileList) {
+  const files = {};
+  for (const file of fileList) files[file.name] = await file.text();
+  try {
+    const out = await api('upload', { files, name: `uploaded · ${fileList.length} files` });
+    (out.warnings || []).forEach(w => toast(w));
+    state.uploadError = null;
+    state.schedule = state.precheck = null;
+    await refresh(); render();
+    const i = out.instance;
+    toast(`Loaded ${i.activities} activities, ${i.contracts} contracts, ${i.horizon_weeks} weeks.`);
+  } catch (err) {
+    // A rejected upload leaves the old instance loaded, which looks like nothing
+    // happened. Say so on the page rather than in a toast that disappears.
+    state.uploadError = err.message;
+    render();
+    toast('Upload rejected — see the message on the page.', true);
+  }
+}
+
+document.addEventListener('dragover', ev => {
+  const drop = ev.target.closest?.('#drop');
+  if (drop) { ev.preventDefault(); drop.classList.add('over'); }
+});
+document.addEventListener('dragleave', ev => {
+  const drop = ev.target.closest?.('#drop');
+  if (drop) drop.classList.remove('over');
+});
+document.addEventListener('drop', async ev => {
+  const drop = ev.target.closest?.('#drop');
+  if (!drop) return;
+  ev.preventDefault();
+  drop.classList.remove('over');
+  const files = [...ev.dataTransfer.files].filter(f => f.name.toLowerCase().endsWith('.csv'));
+  if (!files.length) return toast('Those did not look like CSV files.', true);
+  await upload(files);
+});
+
+/* ────────────────────────────────────────────────────────────── start */
+
+(async function start() {
+  try {
+    await refresh();
+    render();
+  } catch (err) {
+    $('#view').innerHTML = `<div class="card"><h3>Cannot reach the planner</h3>
+      <p style="color:var(--muted)">${esc(err.message)}</p></div>`;
+  }
+})();
