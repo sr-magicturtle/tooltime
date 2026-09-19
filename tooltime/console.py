@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import threading
 import uuid
 import zipfile
@@ -116,7 +117,14 @@ class Session:
             'authorised': scenario in self.authorised,
             'churn': plan.get('churn'),
             'negotiation': self.transcripts.get(scenario, {}).get('ledger'),
+            'retained_incumbent': plan.get('retained_incumbent', False),
         }
+
+    def _solve_context(self, scenario):
+        """A cached plan is reusable only for the same instance and constraints."""
+        return (self.revision, scenario, json.dumps(
+            {'reductions': self.reductions, 'locks': [_as_lever(l) for l in self.locks]},
+            sort_keys=True))
 
     def precheck(self, scenario):
         with self._lock:
@@ -127,7 +135,9 @@ class Session:
             instance = self.instance
             previous = (self.plans.get(scenario) or {}).get('solution')
             reductions, active_locks = list(self.reductions), list(self.locks)
+            context = self._solve_context(scenario)
         started = datetime.now(timezone.utc)
+        effective_locks, refusals = active_locks, []
 
         if use_agents:
             outcome = negotiate(instance, scenario, rounds=rounds,
@@ -142,24 +152,61 @@ class Session:
             result = locks_module.apply(instance, scenario, active_locks,
                                         reductions=reductions, seconds=seconds,
                                         previous=previous)
+            effective_locks = result.get('applied', active_locks)
+            refusals = result['refused']
             plan = {'solution': result['solution'], 'report': result['report'],
                     'strategy': 'solver', 'degraded': result['degraded'],
                     'error': result['error'], 'refused': result['refused'],
                     'churn': result.get('churn')}
             transcript = None
 
-        plan['seconds'] = round((datetime.now(timezone.utc) - started).total_seconds(), 2)
-        if previous is not None and plan.get('solution') is not None and 'churn' not in plan:
-            plan['churn'] = locks_module.churn(previous, plan['solution'])
-
         with self._lock:
+            if self.instance is not instance or self._solve_context(scenario) != context:
+                raise ValueError('Planning inputs changed while solving. Run the scenario again.')
+            # A short or unlucky rerun must never replace a better valid schedule.
+            # Re-score the exported CSVs, including the incumbent, rather than trust
+            # either the solver's metrics or a cached validator verdict.
+            plan['report'] = _checked_report(instance, plan.get('solution'), scenario,
+                                             reductions, effective_locks)
+            if refusals and plan['report'] and plan['report']['feasible']:
+                refused_ids = {item['lock']['id'] for item in refusals}
+                self.locks = [lock for lock in self.locks if lock['id'] not in refused_ids]
+                # Refused overrides are no longer active. Every scenario shares
+                # these decisions, so its old approval/transcript is now stale.
+                self.authorised.clear()
+                self.transcripts.clear()
+                context = self._solve_context(scenario)
+                for item in refusals:
+                    self.record('override_refused', f'{item["lock"]["activity"]}: {item["why"]}')
+            incumbent = self.plans.get(scenario)
+            retained = False
+            if incumbent and incumbent.get('_context') == context:
+                report = _checked_report(instance, incumbent.get('solution'), scenario,
+                                         reductions, self.locks)
+                old_score, new_score = _score(report), _score(plan['report'])
+                if old_score is not None and (new_score is None or old_score <= new_score):
+                    plan = dict(incumbent, report=report)
+                    retained = True
+            plan['refused'] = refusals
+            plan['_context'] = context
+            plan['retained_incumbent'] = retained
+            plan['seconds'] = round((datetime.now(timezone.utc) - started).total_seconds(), 2)
+            if previous is not None and plan.get('solution') is not None:
+                plan['churn'] = locks_module.churn(previous, plan['solution'])
+            if plan['report'] and not plan['report']['feasible']:
+                plan['degraded'] = True
+                plan['error'] = plan.get('error') or 'The schedule does not satisfy all current constraints.'
             self.plans[scenario] = plan
             self.authorised.pop(scenario, None)
-            if transcript:
-                self.transcripts[scenario] = transcript
+            if not retained:
+                if transcript:
+                    self.transcripts[scenario] = transcript
+                else:
+                    self.transcripts.pop(scenario, None)
             self.record('solved', f'Scenario {scenario} '
                                   f'({"agents" if use_agents else "solver"}), '
-                                  f'{plan["seconds"]}s')
+                                  f'{plan["seconds"]}s'
+                                  + ('; retained the better validated plan' if retained else ''))
             summary = self._plan_summary(scenario)
         summary['refused'] = plan.get('refused', [])
         return summary
@@ -566,6 +613,41 @@ def _as_lever(lock):
     """A lock is applied through the same channel a concession is, but hard."""
     return {'lever': lock['lever'], 'activity': lock['activity'],
             'week': lock['week'], 'contract': None}
+
+
+def _score(report):
+    """Only a feasible, finite independent score can beat another schedule."""
+    score = (report or {}).get('soft_scores', {}).get('objective_score')
+    return score if report and report['feasible'] and isinstance(score, (int, float)) \
+        and math.isfinite(score) else None
+
+
+def _checked_report(instance, solution, scenario, reductions, locks):
+    if solution is None:
+        return None
+    report = harness._report(instance, solution, scenario)
+    violations = report['hard_violations']
+    if solution.get('scenario') != scenario:
+        violations.append({'rule': 'scenario', 'detail': 'Schedule belongs to a different scenario.'})
+    # The submission validator knows the published instance, but app-specific
+    # disruptions and human overrides must also hold before a plan can be reused.
+    if reductions:
+        changed = dict(solution, scenario=scenario, capacity_reductions=reductions)
+        violations.extend(v for v in engine.validate(instance, changed)['violations']
+                          if v['rule'] == 'capacity')
+    for lock in locks:
+        rows = [r for r in solution['access'] if r['activity_id'] == lock['activity']]
+        weeks = {int(r['week']) for r in rows}
+        invalid = ((lock['lever'] == 'pin' and lock['week'] not in weeks)
+                   or (lock['lever'] == 'forbid' and lock['week'] in weeks)
+                   or (lock['lever'] == 'no_eclo' and any(int(r['eclo']) for r in rows)))
+        if invalid:
+            violations.append({'rule': 'override',
+                               'detail': f'{lock["activity"]}: {lock["lever"]} override is not satisfied.'})
+    report['feasible'] = not violations
+    if violations:
+        report['soft_scores'].pop('objective_score', None)
+    return report
 
 
 def validate_uploaded(instance_files, submission_files, scenario=None):

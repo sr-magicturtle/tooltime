@@ -1,0 +1,158 @@
+{
+  "generated_at": "2026-09-19T05:59:16.032563+00:00",
+  "data": "PS1\\01_data",
+  "seconds_per_scenario": 6.0,
+  "solver_seed": 11,
+  "ortools_available": true,
+  "cases": [
+    {
+      "case": "public",
+      "mutation": null,
+      "seed": null,
+      "description": "Unchanged source dataset"
+    },
+    {
+      "case": "supply-3",
+      "mutation": "supply",
+      "seed": 3,
+      "description": "supply reduced on ~50% of locations"
+    },
+    {
+      "case": "workload-4",
+      "mutation": "workload",
+      "seed": 4,
+      "description": "workload raised on ~40% of activities"
+    },
+    {
+      "case": "combo-7",
+      "mutation": "combo",
+      "seed": 7,
+      "description": "supply reduced on ~50% of locations; planned starts pushed later on ~30% of activities"
+    }
+  ],
+  "results": [
+    {
+      "case": "public",
+      "scenario": "A",
+      "feasible": true,
+      "score": 32.2,
+      "status": "OPTIMAL",
+      "engine_feasible": true,
+      "csv_feasible": true,
+      "seconds": 2.506
+    },
+    {
+      "case": "public",
+      "scenario": "B",
+      "feasible": true,
+      "score": 30.0,
+      "status": "OPTIMAL",
+      "engine_feasible": true,
+      "csv_feasible": true,
+      "seconds": 4.253
+    },
+    {
+      "case": "public",
+      "scenario": "C",
+      "feasible": true,
+      "score": 26.1,
+      "status": "OPTIMAL",
+      "engine_feasible": true,
+      "csv_feasible": true,
+      "seconds": 4.679
+    },
+    {
+      "case": "supply-3",
+      "scenario": "A",
+      "feasible": true,
+      "score": 32.2,
+      "status": "OPTIMAL",
+      "engine_feasible": true,
+      "csv_feasible": true,
+      "seconds": 2.693
+    },
+    {
+      "case": "supply-3",
+      "scenario": "B",
+      "feasible": true,
+      "score": 30.0,
+      "status": "OPTIMAL",
+      "engine_feasible": true,
+      "csv_feasible": true,
+      "seconds": 4.628
+    },
+    {
+      "case": "supply-3",
+      "scenario": "C",
+      "feasible": true,
+      "score": 26.1,
+      "status": "OPTIMAL",
+      "engine_feasible": true,
+      "csv_feasible": true,
+      "seconds": 4.535
+    },
+    {
+      "case": "workload-4",
+      "scenario": "A",
+      "feasible": true,
+      "score": 53.2,
+      "status": "OPTIMAL",
+      "engine_feasible": true,
+      "csv_feasible": true,
+      "seconds": 2.916
+    },
+    {
+      "case": "workload-4",
+      "scenario": "B",
+      "feasible": true,
+      "score": 50.0,
+      "status": "OPTIMAL",
+      "engine_feasible": true,
+      "csv_feasible": true,
+      "seconds": 5.821
+    },
+    {
+      "case": "workload-4",
+      "scenario": "C",
+      "feasible": true,
+      "score": 47.1,
+      "status": "OPTIMAL",
+      "engine_feasible": true,
+      "csv_feasible": true,
+      "seconds": 6.486
+    },
+    {
+      "case": "combo-7",
+      "scenario": "A",
+      "feasible": true,
+      "score": 907.9,
+      "status": "OPTIMAL",
+      "engine_feasible": true,
+      "csv_feasible": true,
+      "seconds": 3.799
+    },
+    {
+      "case": "combo-7",
+      "scenario": "B",
+      "feasible": false,
+      "score": null,
+      "status": "INCOMPLETE_OR_INVALID",
+      "engine_feasible": false,
+      "csv_feasible": false,
+      "violation_rules": [
+        "workload"
+      ],
+      "seconds": 1.564
+    },
+    {
+      "case": "combo-7",
+      "scenario": "C",
+      "feasible": true,
+      "score": 77.9,
+      "status": "OPTIMAL",
+      "engine_feasible": true,
+      "csv_feasible": true,
+      "seconds": 5.305
+    }
+  ]
+}

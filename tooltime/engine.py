@@ -21,7 +21,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT / '.deps') not in sys.path:
-    sys.path.insert(0, str(ROOT / '.deps'))
+    # Prefer wheels installed for this interpreter/platform. A copied .deps folder
+    # can contain native extensions from a different computer.
+    sys.path.append(str(ROOT / '.deps'))
 try:
     from ortools.sat.python import cp_model
 except ImportError:
@@ -496,8 +498,56 @@ def _concession_index(concessions):
     return index
 
 
+def _concession_violations(instance, placements, concessions):
+    """Check user decisions on heuristic/incumbent paths as well as CP paths."""
+    offered = _concession_index(concessions)
+    byact = defaultdict(list)
+    for row in placements:
+        byact[row['activity_id']].append(row)
+    failures = []
+    for aid, week in offered['pin']:
+        if not any(int(r['week']) == week for r in byact[aid]):
+            failures.append(f'{aid} must work in week {week}')
+    for aid, week in offered['forbid']:
+        if any(int(r['week']) == week for r in byact[aid]):
+            failures.append(f'{aid} must not work in week {week}')
+    for a in instance['activities']:
+        aid = a['activity_id']
+        rows = byact[aid]
+        ec = sum(int(r['eclo']) for r in rows)
+        if (aid in offered['no_eclo'] or a['contract_number'] in offered['no_spend']) and ec:
+            failures.append(f'{aid} may not use ECLO')
+        if ec < offered['eclo_force'].get(aid, 0):
+            failures.append(f'{aid} does not meet its offered ECLO nights')
+        first = a['start_week'] + offered['defer_start'].get(aid, 0)
+        if any(int(r['week']) < first for r in rows):
+            failures.append(f'{aid} works before its agreed start week {first}')
+    crews = Counter()
+    activities = {a['activity_id']: a for a in instance['activities']}
+    for r in placements:
+        a = activities[r['activity_id']]
+        key = (a['contract_number'], a['activity_type'], int(r['week']), r['possession_night'])
+        crews[key] += 1
+    for (contract, _, week, _), count in crews.items():
+        if count > offered['workfront_release'].get(contract, math.inf):
+            failures.append(f'{contract} exceeds its offered workfronts in week {week}')
+    return failures
+
+
+def _checked_candidate(instance, scenario, reductions, horizon, rows, concessions=()):
+    if not rows or any(int(r['week']) > horizon for r in rows):
+        return None
+    try:
+        answer = _assemble(instance, scenario, copy.deepcopy(rows), reductions)
+        if answer['feasible'] and not _concession_violations(instance, answer['access'], concessions):
+            return answer
+    except (KeyError, TypeError, ValueError):
+        pass
+    return None
+
+
 def _cp_solve(instance, scenario, reductions, horizon, seconds, seed=11, concessions=(),
-              relax_planned_dates=False):
+              relax_planned_dates=False, warm=None):
     offered = _concession_index(concessions)
     # Scenario B forbids overrun outright. On an oversubscribed instance that makes B
     # genuinely unsatisfiable, and forcing it anyway drops workload — a worse breach
@@ -508,6 +558,15 @@ def _cp_solve(instance, scenario, reductions, horizon, seconds, seed=11, concess
     projects = {r['contract_number']: r for r in instance['projects']}
     byid = {a['activity_id']: a for a in acts}
     origin = date.fromisoformat(instance['horizon_start'])
+    warm = _warm_start(instance, scenario, reductions, horizon) if warm is None else warm
+    incumbent = _checked_candidate(instance, scenario, reductions, horizon, warm, concessions)
+    score_limit = (round(incumbent['metrics']['objective_score'] * 10)
+                   if incumbent and not relax_planned_dates else None)
+    warm_x = {(r['activity_id'], r['week'], r['possession_night']) for r in warm}
+    warm_ec = {(r['activity_id'], r['week']): r['eclo'] for r in warm}
+    warm_end = defaultdict(int)
+    for r in warm:
+        warm_end[r['activity_id']] = max(warm_end[r['activity_id']], r['week'])
     model = cp_model.CpModel()
     slots = max(4, max(r['supply_capacity'] for r in instance['supply']) + (scenario != 'A'))
     if scenario == 'B':
@@ -519,7 +578,14 @@ def _cp_solve(instance, scenario, reductions, horizon, seconds, seed=11, concess
         aid = a['activity_id']
         last = min(horizon, a['deadline_week']) if strict_dates else horizon
         # A contract that agreed to stand down starts later than it asked to.
-        first = min(a['start_week'] + offered['defer_start'].get(aid, 0), last)
+        first = a['start_week'] + offered['defer_start'].get(aid, 0)
+        planned = (date.fromisoformat(projects[a['contract_number']]['planned_completion_date']) - origin).days
+        weight = {1: 100, 2: 10, 3: 1}[a['priority']]
+        nudge = {1: 13, 2: 12, 3: 10}[a['activity_priority']]
+        # A feasible incumbent bounds each nonnegative penalty term. There is no
+        # need to search dates whose delay alone already costs more than that plan.
+        if score_limit is not None and not strict_dates:
+            last = min(last, (planned + 1 + score_limit // (weight * nudge)) // 7)
         ranges[aid] = range(first, last + 1)
         for w in ranges[aid]:
             y = active[aid, w] = model.NewBoolVar(f'on_{aid}_{w}')
@@ -535,8 +601,7 @@ def _cp_solve(instance, scenario, reductions, horizon, seconds, seed=11, concess
             objectives.append(50 * e)
         if offered['eclo_force'].get(aid) and scenario != 'A':
             # The contract offered ECLO nights; test whether spending them pays.
-            model.Add(sum(eclo[aid, w] for w in ranges[aid]) >= min(
-                offered['eclo_force'][aid], len(ranges[aid])))
+            model.Add(sum(eclo[aid, w] for w in ranges[aid]) >= offered['eclo_force'][aid])
         if aid in offered['no_eclo']:
             for w in ranges[aid]:
                 model.Add(eclo[aid, w] == 0)
@@ -560,13 +625,12 @@ def _cp_solve(instance, scenario, reductions, horizon, seconds, seed=11, concess
             model.AddMaxEquality(end, [w * active[aid, w] for w in ranges[aid]])
         else:
             model.Add(end == 0)
-        planned = (date.fromisoformat(projects[a['contract_number']]['planned_completion_date']) - origin).days
-        late = model.NewIntVar(0, horizon * 7, f'late_{aid}')
+        model.AddHint(end, warm_end[aid])
+        late = model.NewIntVar(0, max(horizon * 7, horizon * 7 - 1 - planned), f'late_{aid}')
         model.Add(late >= end * 7 - 1 - planned)
+        model.AddHint(late, max(0, warm_end[aid] * 7 - 1 - planned))
         if strict_dates:
             model.Add(late == 0)
-        weight = {1: 100, 2: 10, 3: 1}[a['priority']]
-        nudge = {1: 13, 2: 12, 3: 10}[a['activity_priority']]
         if not strict_dates:
             objectives.append(weight * nudge * late)
     # Finish-to-start precedence at the week's granularity.
@@ -595,6 +659,7 @@ def _cp_solve(instance, scenario, reductions, horizon, seconds, seed=11, concess
                 continue
             for w in set(ranges[a['activity_id']]) & set(ranges[b['activity_id']]):
                 model.Add(active[a['activity_id'], w] + active[b['activity_id'], w] <= 1)
+    possession_groups, excess_variables = {}, {}
     for loc in instance['supply']:
         lid = loc['location_id']
         occupants = [a for a in acts if lid in a['locations']]
@@ -604,23 +669,37 @@ def _cp_solve(instance, scenario, reductions, horizon, seconds, seed=11, concess
             present = [a for a in occupants if (a['activity_id'], w) in active]
             if not present:
                 continue
-            used = []
-            for n in range(1, slots + 1):
-                variables = [x[a['activity_id'], w, n] for a in present]
-                group = model.NewBoolVar(f'used_{lid}_{w}_{n}')
-                model.AddMaxEquality(group, variables)
-                used.append(group)
-                model.Add(sum(variables) <= 4)
-                model.Add(sum(x[a['activity_id'], w, n] for a in present if a['access_type'] == 'PC') <= 1)
+            signature = (tuple(a['activity_id'] for a in present), w)
+            if signature not in possession_groups:
+                used = []
+                warm_used = 0
+                for n in range(1, slots + 1):
+                    variables = [x[a['activity_id'], w, n] for a in present]
+                    group = model.NewBoolVar(f'used_{lid}_{w}_{n}')
+                    model.AddMaxEquality(group, variables)
+                    occupied = int(any((a['activity_id'], w, n) in warm_x for a in present))
+                    model.AddHint(group, occupied)
+                    warm_used += occupied
+                    used.append(group)
+                    model.Add(sum(variables) <= 4)
+                    model.Add(sum(x[a['activity_id'], w, n] for a in present if a['access_type'] == 'PC') <= 1)
+                possession_groups[signature] = (used, warm_used)
+            used, warm_used = possession_groups[signature]
             cap = _capacity(instance, lid, w, reductions)
-            # An accepted excess offer buys nights above nominal supply here, and is
-            # paid for in the objective like any other excess night.
-            cap += offered['excess_permit'].get((lid, w), 0) if scenario != 'A' else 0
-            if scenario != 'B':
-                model.Add(sum(used) <= cap + (scenario == 'C'))
-            excess = model.NewIntVar(0, slots, f'excess_{lid}_{w}')
-            model.Add(excess >= sum(used) - cap)
+            # An offer is permission to explore a trade-off, not free nominal
+            # supply. Every extra night retains its published penalty and C limit.
+            cost_key = (signature, cap)
+            if cost_key not in excess_variables:
+                if scenario != 'B':
+                    model.Add(sum(used) <= cap + (scenario == 'C'))
+                excess = model.NewIntVar(0, slots, f'excess_{lid}_{w}')
+                model.Add(excess >= sum(used) - cap)
+                model.AddHint(excess, max(0, warm_used - cap))
+                excess_variables[cost_key] = excess
+            excess = excess_variables[cost_key]
             if scenario != 'A':
+                # Identical platform/sector occupancy uses one set of variables,
+                # but each physical location still contributes its full penalty.
                 objectives.append(70 * excess)
     contracttypes = defaultdict(list)
     for a in acts:
@@ -641,37 +720,29 @@ def _cp_solve(instance, scenario, reductions, horizon, seconds, seed=11, concess
                 model.Add(sum(variables) <= workfronts)
                 used = model.NewBoolVar(f'contractnight_{contract}_{atype}_{w}_{n}')
                 model.AddMaxEquality(used, variables)
+                model.AddHint(used, int(any((a['activity_id'], w, n) in warm_x for a in present)))
                 nights.append(used)
             model.Add(sum(nights) <= p['number_of_maximum_access_per_week'])
     if scenario == 'C':
         for line in instance['lines']:
             code = line['line_code']
             window = model.NewIntVar(1, horizon, 'eclowindow_' + code)
+            marked = [w for (aid, w), ec in warm_ec.items()
+                      if ec and code in byid[aid]['affected_lines']]
+            model.AddHint(window, min(marked, default=1))
             for a in acts:
                 if code in a['affected_lines']:
                     for w in ranges[a['activity_id']]:
                         model.Add(window <= w).OnlyEnforceIf(eclo[a['activity_id'], w])
                         model.Add(window >= w - 1).OnlyEnforceIf(eclo[a['activity_id'], w])
-    # A tiny early-completion tie-break never outweighs one 0.1-point score unit.
-    tie_scale = horizon * max(1, len(acts)) + 1
-    model.Minimize(sum(objectives) * tie_scale + sum(endvars.values()))
-    warm = _warm_start(instance, scenario, reductions, horizon)
-    warm_x = {(r['activity_id'], r['week'], r['possession_night']) for r in warm}
-    warm_ec = {(r['activity_id'], r['week']): r['eclo'] for r in warm}
-    # Two contracts that agreed to share a possession are steered onto one night by
-    # editing the warm start, not by hinting over the top of it: a hint set that
-    # contradicts itself misleads the search far more than it guides it.
-    for first, second in offered['co_share_hint']:
-        moves = [w for w in sorted(set(ranges.get(first, ())) & set(ranges.get(second, ())))
-                 if any((first, w, n) in x and (second, w, n) in x for n in range(1, slots + 1))]
-        if not moves:
-            continue
-        week = moves[0]
-        night = next(n for n in range(1, slots + 1)
-                     if (first, week, n) in x and (second, week, n) in x)
-        for aid in (first, second):
-            warm_x = {k for k in warm_x if not (k[0] == aid and k[1] == week)}
-            warm_x.add((aid, week, night))
+    # Search only the graded penalty. A secondary early-completion objective can
+    # spend a short budget rearranging zero-penalty work instead of reducing cost.
+    if score_limit is not None:
+        model.Add(sum(objectives) <= score_limit)
+    model.Minimize(sum(objectives))
+    # Hint the complete schedule, including derived occupancy and cost variables.
+    # Sharing is already explored by the construction portfolio. Editing two rows
+    # of a valid hint here can break workload, predecessors and the other hints.
     for key, variable in x.items():
         model.AddHint(variable, int(key in warm_x))
     hinted_weeks = {(aid, w) for aid, w, _ in warm_x}
@@ -692,19 +763,33 @@ def _cp_solve(instance, scenario, reductions, horizon, seconds, seed=11, concess
             placements.append({'activity_id': aid, 'week': w, 'eclo': solver.Value(eclo[aid, w]), 'possession_night': n})
     info = {'cp_sat_status': label, 'objective_bound': solver.BestObjectiveBound(),
             'objective_value': solver.ObjectiveValue(), 'branches': solver.NumBranches(),
+            'objective_scale': 10,
             'model_scope': 'Coherent global possession nights; conservative relative to location-local slots.'}
+    if incumbent:
+        candidate = _checked_candidate(instance, scenario, reductions, horizon, placements, concessions)
+        if not candidate or candidate['metrics']['objective_score'] > incumbent['metrics']['objective_score']:
+            info['incumbent_retained'] = True
+            return incumbent['access'], 'INCUMBENT', info
     return placements, label, info
 
 
 def _warm_start(instance, scenario, reductions, horizon):
+    try:
+        from .heuristics import warm_candidates
+    except ImportError:  # Direct script invocation, as supported by engine.py.
+        from tooltime.heuristics import warm_candidates
     candidate = _greedy(instance, scenario, reductions, horizon)
+    options = [candidate] + warm_candidates(instance, scenario, reductions, horizon)
     if scenario == 'C':
-        strict = _greedy(instance, 'A', reductions, horizon)
-        options = [(rows, _assemble(instance, scenario, rows, reductions)) for rows in (candidate, strict)]
-        valid = [(rows, answer) for rows, answer in options if answer['feasible']]
-        if valid:
-            return min(valid, key=lambda item: item[1]['metrics']['objective_score'])[0]
-    return candidate
+        options.append(_greedy(instance, 'A', reductions, horizon))
+    best, best_key = candidate, (math.inf, math.inf)
+    for rows in options:
+        checked = _checked_candidate(instance, scenario, reductions, horizon, rows)
+        if checked:
+            key = (checked['metrics']['objective_score'], sum(max(a['weeks']) for a in checked['activities']))
+            if key < best_key:
+                best, best_key = checked['access'], key
+    return best
 
 
 def solve(instance, scenario='C', **kwargs):
@@ -731,12 +816,21 @@ def solve(instance, scenario='C', **kwargs):
         raise ValueError('Instance exceeds this prototype\'s bounded model size: maximum 520 planning weeks, 200,000 activity/week/night options and 2,000,000 potential conflict constraints. Reduce the horizon or split the instance.')
     solver_name = 'OR-Tools CP-SAT' if cp_model else 'Constructive constraint heuristic'
     relax = bool(kwargs.get('relax_planned_dates'))
+    warm = _warm_start(instance, 'C' if relax else scenario, reductions, horizon)
+    concessions = kwargs.get('concessions', ())
+    previous = kwargs.get('incumbent')
+    if previous and previous.get('scenario') == scenario:
+        checked = _checked_candidate(instance, scenario, reductions, horizon,
+                                     previous.get('access'), concessions)
+        fresh = _checked_candidate(instance, scenario, reductions, horizon, warm, concessions)
+        if checked and (not fresh or checked['metrics']['objective_score'] < fresh['metrics']['objective_score']):
+            warm = checked['access']
     if cp_model:
         placements, status, info = _cp_solve(instance, scenario, reductions, horizon, seconds,
-                                             int(kwargs.get('seed', 11)), kwargs.get('concessions', ()),
-                                             relax)
+                                             int(kwargs.get('seed', 11)), concessions,
+                                             relax, warm=warm)
     else:
-        placements, status, info = _warm_start(instance, 'C' if relax else scenario, reductions, horizon), 'HEURISTIC', {'fallback': True}
+        placements, status, info = warm, 'HEURISTIC', {'fallback': True}
     # Expand the planning horizon under congestion; never silently omit work.
     demand = {a['activity_id']: a['total_accesses'] for a in instance['activities']}
     for attempt in range(3):
@@ -751,6 +845,12 @@ def solve(instance, scenario='C', **kwargs):
         info['horizon_extended'] = True
         info['fallback'] = True
     solution = _assemble(instance, scenario, placements, reductions)
+    for detail in _concession_violations(instance, placements, concessions):
+        solution['violations'].append({'rule': 'decision', 'severity': 'hard', 'detail': detail})
+    if solution['violations']:
+        solution['feasible'] = False
+        solution['metrics']['hard_violations'] = len(solution['violations'])
+        solution['metrics']['objective_score'] = None
     solution['solver'] = solver_name if not info.get('fallback') else 'Constructive constraint heuristic (CP-SAT fallback)' if cp_model else solver_name
     solution['status'] = status if solution['feasible'] else 'INCOMPLETE_OR_INVALID'
     solution['solver_info'] = info

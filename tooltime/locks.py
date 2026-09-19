@@ -94,7 +94,7 @@ def apply(instance, scenario, locks, reductions=(), seconds=20.0, previous=None)
             accepted.append(lock)
 
     outcome = safe_solve(instance, scenario, seconds=seconds,
-                         reductions=reductions, locks=accepted)
+                         reductions=reductions, locks=accepted, incumbent=previous)
 
     if outcome['report'] is None or not outcome['report']['feasible']:
         # Find the smallest set of locks to blame by dropping them one at a time.

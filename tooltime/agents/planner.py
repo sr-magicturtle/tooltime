@@ -105,6 +105,19 @@ def negotiate(instance, scenario='C', rounds=3, seconds_per_round=8.0,
                                 concessions=list(concessions), time_limit=seconds_per_round,
                                 seed=11 + round_no)
         report = _verify(instance, solution, scenario)
+        # CSV validation knows the published instance, but a negotiation must
+        # also honour its accepted decisions and the current disruptions. A
+        # timeout fallback is not allowed to silently undo an agreed concession.
+        local = engine.validate(instance, dict(solution, capacity_reductions=list(reductions)))
+        extra = local['violations'] + [
+            {'rule': 'decision', 'severity': 'hard', 'detail': detail}
+            for detail in engine._concession_violations(instance, solution['access'], concessions)]
+        for violation in extra:
+            if violation not in report['hard_violations']:
+                report['hard_violations'].append(violation)
+        if report['hard_violations']:
+            report['feasible'] = False
+            report['soft_scores'].pop('objective_score', None)
         bus.send('solver_report', 'solver', 'Planner', round_no,
                  bundle=label, feasible=report['feasible'],
                  score=report['soft_scores'].get('objective_score'),
@@ -126,7 +139,7 @@ def negotiate(instance, scenario='C', rounds=3, seconds_per_round=8.0,
     # CP-SAT proving optimality means no concession can do better; say so rather than
     # spending rounds rediscovering it. A harder instance returns FEASIBLE, not
     # OPTIMAL, and the loop below then does real work.
-    if best_solution.get('solver_info', {}).get('cp_sat_status') == 'OPTIMAL':
+    if best_report['feasible'] and best_solution.get('solver_info', {}).get('cp_sat_status') == 'OPTIMAL':
         bus.note('Planner', 'Baseline is proven optimal for this model — no concession '
                             'can improve it. Negotiation closed.', 0)
         ledger[0]['why'] = 'baseline proven optimal'

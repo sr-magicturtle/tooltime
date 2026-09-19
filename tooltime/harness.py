@@ -43,7 +43,7 @@ def _report(instance, solution, scenario):
 
 
 def safe_solve(instance, scenario='C', seconds=20.0, reductions=(), concessions=(),
-               locks=(), on_step=None):
+               locks=(), on_step=None, incumbent=None):
     """Return the best solution any strategy can produce. Never raises.
 
     The result always carries `solution`, `report`, `strategy` and `attempts`. If every
@@ -72,8 +72,21 @@ def safe_solve(instance, scenario='C', seconds=20.0, reductions=(), concessions=
                     instance, scenario, time_limit=max(0.2, budget * rung['share']),
                     capacity_reductions=list(reductions),
                     concessions=list(concessions) + list(locks),
-                    relax_planned_dates=rung['relax'])
+                    relax_planned_dates=rung['relax'], incumbent=incumbent)
             report = _report(instance, solution, scenario)
+            # Export validation does not know the user's disruptions or decisions.
+            # Apply those checks to every rung, including the raw greedy fallback.
+            local = engine.validate(instance, solution)
+            extra = local['violations'] + [
+                {'rule': 'decision', 'severity': 'hard', 'detail': detail}
+                for detail in engine._concession_violations(
+                    instance, solution['access'], list(concessions) + list(locks))]
+            for violation in extra:
+                if violation not in report['hard_violations']:
+                    report['hard_violations'].append(violation)
+            if report['hard_violations']:
+                report['feasible'] = False
+                report['soft_scores'].pop('objective_score', None)
             entry = {'strategy': rung['label'], 'feasible': report['feasible'],
                      'score': report['soft_scores'].get('objective_score'),
                      'violations': len(report['hard_violations']),
